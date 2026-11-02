@@ -1,0 +1,8 @@
+# research-diff on its own example project: the README's map is drawn from examples/.
+notes = ["examples/**/*.md"]
+configs = ["examples/**/*.yaml", "examples/**/*.json"]
+scripts = ["examples/**/*.py"]
+paper = ["examples/**/*.tex"]
+
+[readme]
+image = "docs/research.svg"

@@ -1,0 +1,10 @@
+# Batch 32 against batch 512 on the 8k-example split.
+model: resnet18
+dataset: small-8k
+batch_sizes: [32, 512]
+
+research:
+  id: E1
+  title: Batch 32 vs 512 on small-8k
+  tests: [H1]
+  results: ../out/e1.json
