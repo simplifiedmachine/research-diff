@@ -141,3 +141,13 @@ def test_suggest_proposes_checked_markers_as_a_patch_and_changes_nothing(repo, f
     assert suggest.run(repo, ["notes/plan.md"], str(out), ask=fake_llm) == 0
     subprocess.run(["git", "apply", str(out)], cwd=repo, check=True)            # the patch applies as it is
     assert "H3" in compare.read(repo, ".")[0]["nodes"]
+
+
+def test_a_claim_warns_when_a_result_stops_meeting_what_it_expects(repo, files):
+    tex = (repo / "paper/main.tex").read_text().replace("% relies on: H1\n", "% relies on: H1\n% expects: E1.results acc.b32 > 0.86\n")
+    files(repo, {"paper/main.tex": tex})
+    assert compare.read(repo, ".")[0]["warnings"] == []                       # 0.874 > 0.86
+    files(repo, {"out/e1.json": '{"acc": {"b32": 0.851, "b512": 0.842}}\n'})
+    d = compare.compare(repo, "HEAD", ".").diff
+    assert "C1 expects E1.results acc.b32 > 0.86, but it is 0.851" in d["warnings"]
+    assert "1 new warning (C1 expects E1.results acc.b32 > 0.86, but it is 0.851)" in d["headline"]

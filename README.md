@@ -31,10 +31,10 @@ status: open                                      <- open | supported | refuted 
 | Notes (`.md`) | definitions as above; `tests:`, `of:`, `supports:`, `weakens:`, `relies on:`, `metrics: acc=0.91` |
 | Experiment configs (YAML, JSON, TOML) | a `research:` block: `id`, `title`, `tests`, `status`, and `results: out/e1.json`, whose numbers become the result `E1.results` |
 | Scripts and notebooks | a comment: `# research-diff: E2 tests H2` |
-| The paper (LaTeX) | a comment: `% C1: Small batches win` and `% relies on: H1, R1`; the paragraph's `\cite{…}` become its sources |
+| The paper (LaTeX) | a comment: `% C1: Small batches win` and `% relies on: H1, R1`; the paragraph's `\cite{…}` become its sources; `% expects: E1.results acc.batch32 > 0.85` warns when a result stops meeting it |
 
 The map is built from markers only, so the same files always give the same map. It warns when a claim relies on
-nothing or on a refuted hypothesis, when an open hypothesis has no experiment, and when a link points at nothing.
+nothing or on a refuted hypothesis, when a number no longer meets what a claim `expects:`, when an open hypothesis has no experiment, and when a link points at nothing.
 
 ## Use
 

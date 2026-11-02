@@ -30,7 +30,7 @@ from system_diff.extract import glob_rx
 
 RELS = {"answers": "answers", "tests": "tests", "of": "of", "supports": "supports", "weakens": "weakens",
         "relies on": "relies on", "relies": "relies on", "depends on": "relies on", "based on": "relies on"}
-ATTRS = ("status", "metrics", "results", "sources", "source")
+ATTRS = ("status", "metrics", "results", "sources", "source", "expects")
 KEYS = "|".join(sorted(list(RELS) + list(ATTRS), key=len, reverse=True))
 ATTR_RX = re.compile(rf"^\s*(?:[-*+]\s+)?\**({KEYS})\**\s*:\s*(.+?)\s*$", re.I)
 COMMENT_RX = re.compile(r"(?:#|//|%)\s*research-diff:\s*(.+)$", re.M)
@@ -87,6 +87,8 @@ class Model:
             n["status"] = value.strip().lower().rstrip(".")
         elif key == "metrics":
             n["metrics"].update(_metrics(value))
+        elif key == "expects":
+            n.setdefault("expects", []).append(value.strip())
         elif key in ("sources", "source"):
             n["sources"] = sorted(set(n["sources"]) | {s.strip() for s in re.split(r"[,;]", value) if s.strip()})
 
@@ -297,6 +299,8 @@ def extract(source, cfg: Dict[str, Any]) -> dict:
                     warnings.append(f"{nid} relies on {b}, which is refuted")
             for w in by[("weakens", nid)]:
                 warnings.append(f"{nid} is weakened by {w}")
+        for e in n.get("expects", []):
+            warnings += check_expect(nid, e, nodes)
     return {"ref": source.label, "nodes": {k: nodes[k] for k in sorted(nodes, key=_order)},
             "links": [list(x) for x in sorted(m.links)], "warnings": sorted(set(warnings))}
 
@@ -304,3 +308,20 @@ def extract(source, cfg: Dict[str, Any]) -> dict:
 def _order(nid: str) -> tuple:
     m = re.match(r"([A-Za-z])(\d+)([a-z]?)(.*)", nid)
     return ("QHERC".find(m.group(1)), int(m.group(2)), m.group(3), m.group(4)) if m else (9, 0, "", nid)
+
+
+EXPECT_RX = re.compile(r"^(\S+)\s+(\S+)\s*(>=|<=|==|>|<)\s*(-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)\s*$")
+OPS = {">": lambda a, b: a > b, ">=": lambda a, b: a >= b, "<": lambda a, b: a < b, "<=": lambda a, b: a <= b,
+       "==": lambda a, b: abs(a - b) < 1e-12}
+
+
+def check_expect(nid: str, expect: str, nodes: Dict[str, dict]) -> List[str]:
+    """`expects: E1.results acc.b32 > 0.85` on a claim: a warning when the number is missing or does not meet it."""
+    m = EXPECT_RX.match(expect)
+    if not m:
+        return [f"{nid}: cannot read `expects: {expect}` (write: RESULT METRIC > NUMBER)"]
+    target, metric, op, want = m.group(1), m.group(2), m.group(3), float(m.group(4))
+    got = nodes.get(target, {}).get("metrics", {}).get(metric)
+    if got is None:
+        return [f"{nid} expects {target} {metric} {op} {want:g}, but {target} has no {metric}"]
+    return [] if OPS[op](got, want) else [f"{nid} expects {target} {metric} {op} {want:g}, but it is {got:g}"]
