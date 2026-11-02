@@ -5,4 +5,4 @@ scripts = ["examples/**/*.py"]
 paper = ["examples/**/*.tex"]
 
 [readme]
-image = "docs/research.svg"
+image = "https://raw.githubusercontent.com/simplifiedmachine/research-diff/main/docs/research.svg"  # shows on PyPI too

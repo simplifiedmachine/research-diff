@@ -4,7 +4,7 @@ Maps your research from its notes, experiment configs, results and paper (questi
 results, claims) and shows what each iteration changed. Built for exploring ideas with AI coding agents.
 
 <!-- research-map:begin -->
-![Research map, generated from the notes, configs, results and paper](docs/research.svg)
+![Research map, generated from the notes, configs, results and paper](https://raw.githubusercontent.com/simplifiedmachine/research-diff/main/docs/research.svg)
 
 <details><summary>1 open warning</summary>
 
@@ -39,7 +39,7 @@ nothing or on a refuted hypothesis, when a number no longer meets what a claim `
 ## Use
 
 ```sh
-pipx install git+https://github.com/simplifiedmachine/research-diff
+pipx install research-diff
 research-diff map --out docs            # research.svg and research.json
 research-diff diff --base HEAD          # what your uncommitted iteration did
 research-diff sync                      # MLflow / W&B runs into research/runs.json

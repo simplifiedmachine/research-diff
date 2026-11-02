@@ -24,7 +24,8 @@ DEFAULTS: Dict[str, Any] = {
     "kinds": {"Q": "question", "H": "hypothesis", "E": "experiment", "R": "result", "C": "claim"},
     "picture": {"columns": [["question", "Questions"], ["hypothesis", "Hypotheses"], ["experiment", "Experiments"],
                             ["result", "Results"], ["claim", "Claims"]]},
-    "readme": {"file": "README.md", "image": "docs/research.svg",
+    "readme": {"file": "README.md", "svg": "docs/research.svg",   # the picture's file; `image` links to it (default: the file)
+               "image": "",
                "begin": "<!-- research-map:begin -->", "end": "<!-- research-map:end -->"},
 }
 

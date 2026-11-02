@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "research-diff"
-version = "0.1.0.dev0"
+version = "0.1.0"
 description = "Maps your research from its notes, experiment configs, results and paper (questions, hypotheses, experiments, results, claims) and shows what each iteration changed. Built for exploring ideas with AI coding agents."
 readme = "README.md"
 license = "MIT"
@@ -19,7 +19,7 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 # Its pictures, snapshots and live page are system-diff's (same author, no dependencies of its own), pinned.
-dependencies = ["system-diff @ git+https://github.com/simplifiedmachine/system-diff@59936d6446e74b4219f54d13fd92243e3d8df604"]
+dependencies = ["system-diff==0.1.0"]
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.10"]
@@ -32,9 +32,6 @@ Documentation = "https://github.com/simplifiedmachine/research-diff/wiki"
 [project.scripts]
 research-diff = "research_diff.cli:main"
 resdiff = "research_diff.cli:main"
-
-[tool.hatch.metadata]
-allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/research_diff"]
