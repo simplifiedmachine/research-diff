@@ -17,6 +17,8 @@ DEFAULTS: Dict[str, Any] = {
     "configs": ["**/*.yaml", "**/*.yml", "**/*.json", "**/*.toml"],
     "scripts": ["**/*.py", "**/*.ipynb"],
     "paper": ["**/*.tex"],
+    "runs": ["research/runs.json"],               # tracker runs, written by `research-diff sync`
+    "trackers": {"mlflow": "mlruns", "wandb": "wandb"},
     "skip": ["node_modules", "__pycache__", "dist", "build", ".venv*", "venv", ".git", "site-packages"],
     "ignore": ["README.md", "CHANGELOG.md"],     # never read for markers (globs)
     "kinds": {"Q": "question", "H": "hypothesis", "E": "experiment", "R": "result", "C": "claim"},

@@ -68,7 +68,7 @@ class Model:
         self.links: set = set()
 
     def node(self, nid: str, title: str = "", where: str = "") -> dict:
-        kind = "result" if nid.endswith(".results") else self.kinds.get(nid[0], "note")
+        kind = "result" if "." in nid else self.kinds.get(nid[0], "note")   # E1.results, E1.mlflow.ab12cd34
         n = self.nodes.setdefault(nid, {"kind": kind, "title": "", "status": "", "files": [], "metrics": {},
                                         "sources": []})
         if title and not n["title"]:
@@ -266,6 +266,14 @@ def extract(source, cfg: Dict[str, Any]) -> dict:
             r = m.node(f"{nid}.results", "", path)   # its box shows the file under the id
             r["metrics"].update(read_results(source.read(path), path))
             m.links.add((f"{nid}.results", "of", nid))
+
+    from .trackers import run_nodes
+    for f, text in source.read_many([x for x in cfg.get("runs", []) if x in fileset]).items():
+        for run in run_nodes(text):
+            rid = f"{run['experiment']}.{run['source']}.{str(run['run'])[:8]}"
+            r = m.node(rid, str(run.get("name") or ""), f)
+            r["metrics"].update({k: float(v) for k, v in (run.get("metrics") or {}).items()})
+            m.links.add((rid, "of", run["experiment"]))
 
     nodes = m.nodes
     for src, rel, dst in sorted(m.links):

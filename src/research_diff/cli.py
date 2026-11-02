@@ -4,6 +4,8 @@ changed in it.
     research-diff map  [--at REF|.] [--out DIR] [--check]           -> research.json, research.svg
     research-diff diff [--base checkpoint|REF] [--head .|REF] [--out DIR]
                                                                     -> diff.json, diff.svg, plan.txt, headline.txt
+    research-diff sync                                              -> MLflow / W&B runs into research/runs.json
+    research-diff suggest [FILE...]                                 -> your LLM proposes markers, as a patch
     research-diff checkpoint [--ref REF]                            -> mark what you have understood
     research-diff watch [--port 8766]                               -> a live page of the diff since then
     research-diff readme [--check]                                  -> the README's generated research map
@@ -85,6 +87,10 @@ def parser() -> argparse.ArgumentParser:
     d.add_argument("--base", default="checkpoint", help="a commit, or checkpoint (default)")
     d.add_argument("--head", default=".", help="a commit, or . for the working tree (default)")
     d.add_argument("--out", default=".")
+    sub.add_parser("sync", help="copy MLflow and W&B runs tagged with an experiment id into research/runs.json")
+    sg = sub.add_parser("suggest", help="your LLM proposes markers for untagged files, as a patch you apply or not")
+    sg.add_argument("files", nargs="*", help="files to read (default: notes and paper files with no marker)")
+    sg.add_argument("--out", default="", help="where to write the patch (default .git/research-diff/suggest.patch)")
     c = sub.add_parser("checkpoint", help="mark what you have understood")
     c.add_argument("--ref", help="a commit to mark instead of the working tree")
     w = sub.add_parser("watch", help="a live local page of the diff since the checkpoint")
@@ -109,6 +115,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _map(args, root)
     if args.cmd == "diff":
         return _diff(args, root)
+    if args.cmd == "sync":
+        got = compare.sync_trackers(root, args.config)
+        print(f"{got['runs']} tracker runs" + (" written to research/runs.json" if got["written"] else ", nothing changed"))
+        return 0
+    if args.cmd == "suggest":
+        from . import suggest
+        return suggest.run(root, args.files, args.out, args.config)
     if args.cmd == "checkpoint":
         sha = compare.checkpoint(root, args.ref)
         print(f"checkpoint: {args.ref or 'the working tree'} ({sha[:9]}) is what you have understood")

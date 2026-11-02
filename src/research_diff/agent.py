@@ -14,7 +14,7 @@ from typing import Callable, Optional
 from system_diff.agent import _claude, _is_repo, _load, _save, _split
 from system_diff.sources import git
 
-from .compare import compare
+from .compare import compare, sync_trackers
 
 NAME = "research-diff"
 SKILL_MARK = "<!-- written by research-diff setup claude -->"
@@ -45,6 +45,7 @@ SCOPES = ("user", "project", "local")
 
 
 def hook_message(root: Path) -> Optional[str]:
+    sync_trackers(root)   # runs logged to MLflow or W&B during the turn count too
     c = compare(root, "checkpoint", ".")
     if not c.diff["changes"]:
         return None

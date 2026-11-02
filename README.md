@@ -42,6 +42,7 @@ nothing or on a refuted hypothesis, when an open hypothesis has no experiment, a
 pipx install git+https://github.com/simplifiedmachine/research-diff
 research-diff map --out docs            # research.svg and research.json
 research-diff diff --base HEAD          # what your uncommitted iteration did
+research-diff sync                      # MLflow / W&B runs into research/runs.json
 research-diff checkpoint                # mark what you have understood
 research-diff diff                      # only what came after that
 ```
@@ -63,10 +64,24 @@ After every Claude Code turn one line says what changed in the research. The age
 on the map and in git) and `checkpoint`. The pictures, snapshots and live page are
 [system-diff](https://github.com/simplifiedmachine/system-diff)'s.
 
-## Coming next
+## Experiment trackers
 
-MLflow and W&B runs as results, and `research-diff suggest`: your LLM proposes markers for untagged notes, as a change
-you accept.
+Runs logged to MLflow (its local `mlruns/` store) or W&B (its local `wandb/` folders) become results of the experiment
+they are tagged with: `research-diff.experiment` (or `research_id`) as an MLflow tag or param, `research_id` in the W&B
+config. Tracker folders are usually git-ignored, so `research-diff sync` copies their runs into `research/runs.json`,
+which is tracked: the runs are then on the map, in git and in the next diff. The hook, the live page and the MCP tools
+sync on their own.
+
+## Markers suggested by your LLM
+
+```sh
+research-diff suggest                 # notes and paper files with no marker yet, or name the files
+git apply .git/research-diff/suggest.patch
+```
+
+Your LLM (the one your Claude Code uses) proposes markers for what the text already says. Each proposal is checked
+before it reaches the patch: a real line of a file it was shown, a marker in that file's own form, and no id that is
+already used. Nothing is written until you apply the patch.
 
 ## License
 

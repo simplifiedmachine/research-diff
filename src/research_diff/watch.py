@@ -17,6 +17,7 @@ from . import compare, graph
 
 class Watcher(base.Watcher):
     def key(self) -> tuple:
+        compare.sync_trackers(self.root, self.config_path)   # a new tracker run changes research/runs.json
         return worktree_tree(self.root), compare._rev(self.root, compare.CHECKPOINT_REF)
 
     def refresh(self) -> None:

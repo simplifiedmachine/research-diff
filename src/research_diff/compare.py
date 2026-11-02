@@ -26,6 +26,13 @@ def _rev(root: Path, ref: str) -> Optional[str]:
         return None
 
 
+def sync_trackers(root: Path, config_path: Optional[str] = None) -> Dict[str, Any]:
+    """Copy the trackers' tagged runs into research/runs.json (see trackers.py); a no-op without tracker folders."""
+    from .trackers import sync
+    t = config.load(None, root, config_path)["trackers"]
+    return sync(root, t.get("mlflow", "mlruns"), t.get("wandb", "wandb"))
+
+
 def checkpoint(root: Path, ref: Optional[str] = None) -> str:
     sha = git("rev-parse", "--verify", f"{ref}^{{commit}}", cwd=root).strip() if ref else snapshot(root)
     git("update-ref", CHECKPOINT_REF, sha, cwd=root)

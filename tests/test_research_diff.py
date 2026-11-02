@@ -95,3 +95,49 @@ def test_the_live_page_shows_the_change_and_mark_as_seen_clears_it(repo, files):
     w.mark_seen()
     assert w.snapshot_state()["changes"] == 0
     assert "Research diff" in watch.PAGE
+
+
+def test_tracker_runs_tagged_with_an_experiment_become_its_results(repo, files):
+    files(repo, {
+        "mlruns/1/abcdef1234567890/meta.yaml": "run_id: abcdef1234567890\n",
+        "mlruns/1/abcdef1234567890/tags/research-diff.experiment": "E1",
+        "mlruns/1/abcdef1234567890/tags/mlflow.runName": "lr-sweep-3",
+        "mlruns/1/abcdef1234567890/metrics/acc": "1 0.80 0\n2 0.86 1\n",
+        "mlruns/1/0000untagged/meta.yaml": "run_id: 0000untagged\n",
+        "wandb/run-20261102_101010-zz9y8x7w/files/config.yaml": "research_id:\n  desc: null\n  value: E2\n",
+        "wandb/run-20261102_101010-zz9y8x7w/files/wandb-summary.json": '{"loss": 0.31, "_step": 40, "done": true}',
+    })
+    assert compare.sync_trackers(repo) == {"runs": 2, "written": True}
+    assert compare.sync_trackers(repo)["written"] is False                    # unchanged runs: the file stays
+    n = compare.read(repo, ".")[0]["nodes"]
+    assert n["E1.mlflow.abcdef12"] == {**n["E1.mlflow.abcdef12"], "title": "lr-sweep-3", "metrics": {"acc": 0.86}}
+    assert n["E2.wandb.zz9y8x7w"]["metrics"] == {"loss": 0.31}
+    assert "E1.mlflow.abcdef12" in compare.compare(repo, "HEAD", ".").diff["headline"]
+
+
+def test_suggest_proposes_checked_markers_as_a_patch_and_changes_nothing(repo, files, tmp_path):
+    from research_diff import suggest
+    files(repo, {"notes/plan.md": "# Next\n\nMaybe the gap comes from the optimiser, not the batch.\n"})
+    import subprocess
+    subprocess.run(["git", "add", "notes/plan.md"], cwd=repo, check=True)
+    assert suggest.untagged(repo) == ["notes/plan.md"]
+
+    def fake_llm(user):
+        assert "notes/plan.md" in user and "Existing ids: Q1, H1" in user
+        return json.dumps({"markers": [
+            {"file": "notes/plan.md", "after_line": 2, "lines": ["## H3: The gap comes from the optimiser", "answers: Q1"]},
+            {"file": "notes/plan.md", "after_line": 2, "lines": ["## H1: Already taken"]},
+            {"file": "notes/elsewhere.md", "after_line": 1, "lines": ["## H9: x"]},
+            {"file": "notes/plan.md", "after_line": 99, "lines": ["## H8: x"]},
+            {"file": "notes/plan.md", "after_line": 1, "lines": ["just prose"]}]})
+
+    before = (repo / "notes/plan.md").read_text()
+    got = suggest.suggest(repo, ["notes/plan.md"], fake_llm)
+    assert (repo / "notes/plan.md").read_text() == before                      # nothing written
+    assert "+## H3: The gap comes from the optimiser" in got["patch"] and "+answers: Q1" in got["patch"]
+    assert [r.split(": ", 1)[1] for r in got["refused"]] == [
+        "H1 is already used", "not one of the files it was shown", "line 99 does not exist", "not a marker: just prose"]
+    out = tmp_path / "s.patch"
+    assert suggest.run(repo, ["notes/plan.md"], str(out), ask=fake_llm) == 0
+    subprocess.run(["git", "apply", str(out)], cwd=repo, check=True)            # the patch applies as it is
+    assert "H3" in compare.read(repo, ".")[0]["nodes"]

@@ -46,6 +46,8 @@ def tool_map(root: Path, at: str = ".") -> Dict[str, Any]:
 
 
 def tool_diff(root: Path, base: str = "checkpoint", head: str = ".") -> Dict[str, Any]:
+    if head == ".":
+        cmp.sync_trackers(root)
     c = cmp.compare(root, base, head)
     svg = graph.diff_svg(c.diff, c.before, c.after, c.cfg)
     path = _out(root) / "diff.svg"
