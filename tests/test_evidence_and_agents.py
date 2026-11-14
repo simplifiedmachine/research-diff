@@ -180,6 +180,6 @@ def test_suggested_links_go_under_the_target_and_are_checked(study, tmp_path):
     assert [r.split(": ", 1)[1] for r in got["refused"]] == ["already written",
                                                              "not two nodes of the map and supports/contradicts/weakens"]
     p = tmp_path / "l.patch"
-    p.write_text(got["patch"])
+    p.write_text(got["patch"], encoding="utf-8", newline="\n")
     subprocess.run(["git", "apply", str(p)], cwd=study, check=True)
     assert ["R2", "contradicts", "C1"] in compare.read(study, ".")[0]["links"]
