@@ -21,9 +21,13 @@ DEFAULTS: Dict[str, Any] = {
     "trackers": {"mlflow": "mlruns", "wandb": "wandb"},
     "skip": ["node_modules", "__pycache__", "dist", "build", ".venv*", "venv", ".git", "site-packages"],
     "ignore": ["README.md", "CHANGELOG.md"],     # never read for markers (globs)
-    "kinds": {"Q": "question", "H": "hypothesis", "E": "experiment", "R": "result", "C": "claim"},
+    "kinds": {"Q": "question", "H": "hypothesis", "E": "experiment", "R": "result", "F": "finding", "C": "claim"},
     "picture": {"columns": [["question", "Questions"], ["hypothesis", "Hypotheses"], ["experiment", "Experiments"],
-                            ["result", "Results"], ["claim", "Claims"]]},
+                            ["result", "Results"], ["finding", "Findings"], ["claim", "Claims"]]},
+    # The evidence graph: which statements of the paper (claims, findings) each piece of evidence supports or
+    # contradicts. `citations`: draw the paper's \cite{} keys as evidence too.
+    "evidence": {"statements": ["claim", "finding"], "citations": False, "svg": "docs/evidence.svg"},
+    "web": {"port": 8766},
     "readme": {"file": "README.md", "svg": "docs/research.svg",   # the picture's file; `image` links to it (default: the file)
                "image": "",
                "begin": "<!-- research-map:begin -->", "end": "<!-- research-map:end -->"},

@@ -1,2 +1,3 @@
-"""research-diff: your research as a map, and what each iteration changed in it."""
-__version__ = "0.1.0"
+"""research-diff: your research as a map, the evidence for and against each claim of the paper, and what each iteration
+changed in it."""
+__version__ = "0.2.0"

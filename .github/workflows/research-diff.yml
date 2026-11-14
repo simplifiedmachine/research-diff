@@ -1,0 +1,44 @@
+name: research diff
+
+# What a pull request does to the research, and above all to the evidence of the paper's claims (supported, contested,
+# contradicted), as a comment on it and in the run's summary; the pictures (diff.svg, evidence.svg and the interactive
+# evidence.html) are the run's "research-diff" artifact. Copy this file into another repository to get the same there
+# (replace `pip install -e .` with `pip install research-diff`).
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  diff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e .
+      - name: What this pull request does to the research and its evidence
+        run: |
+          research-diff diff --base "origin/${{ github.base_ref }}" --head HEAD --out research-diff-out
+          research-diff evidence --at HEAD --out research-diff-out
+          research-diff comment --base "origin/${{ github.base_ref }}" --head HEAD --out research-diff-out/comment.md
+          echo >> research-diff-out/comment.md
+          echo "The pictures: the **research-diff** artifact of [this run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})." >> research-diff-out/comment.md
+          cat research-diff-out/comment.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: research-diff
+          path: research-diff-out
+      - name: Comment on the pull request
+        # A pull request from a fork gets a read-only token: it has the summary and the artifact instead.
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file research-diff-out/comment.md --edit-last \
+            || gh pr comment "${{ github.event.pull_request.number }}" --body-file research-diff-out/comment.md

@@ -4,14 +4,14 @@ build-backend = "hatchling.build"
 
 [project]
 name = "research-diff"
-version = "0.1.0"
-description = "Maps your research from its notes, experiment configs, results and paper (questions, hypotheses, experiments, results, claims) and shows what each iteration changed. Built for exploring ideas with AI coding agents."
+version = "0.2.0"
+description = "Maps your research from its notes, experiment configs, results and paper, draws which evidence supports and which contradicts each claim of the paper, and shows what each iteration (and each agent) changed. Built for doing research with AI coding agents."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
 authors = [{ name = "simplifiedmachine" }]
-keywords = ["research", "experiment-tracking", "hypotheses", "reproducibility", "ai-agents", "claude-code", "mcp"]
+keywords = ["research", "experiment-tracking", "hypotheses", "evidence", "argument-map", "contradictions", "reproducibility", "ai-agents", "multi-agent", "claude-code", "mcp"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
@@ -19,7 +19,7 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 # Its pictures, snapshots and live page are system-diff's (same author, no dependencies of its own), pinned.
-dependencies = ["system-diff==0.1.0"]
+dependencies = ["system-diff==0.8.0"]
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.10"]

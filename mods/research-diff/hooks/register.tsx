@@ -1,0 +1,662 @@
+import { atom, read, update } from 'claude-code'
+import type { EngineInterface, Register } from 'claude-code'
+
+import type { Act, Page, Row } from '../types'
+
+// Research diff, in a pane beside the chat: the paper's claims and findings with what supports and what contradicts
+// each, worst first; what is worth a look since your checkpoint; where Claude (or which agent) is working; your
+// objectives. Tabs: Now, Review, Evidence (every statement by paper section, with its evidence), Agents (the team,
+// what each owns, where one contradicts another, the bus), History (what you asked and what the research got; h on a
+// picked statement shows its own). The page (page.tsx) takes the keys once
+// clicked: ← ↑ ↓ → pick a block and light its flows, Enter zooms in, b back, f follows Claude. Content: `research-diff
+// panel --protocol 2`, laid out for the pane's own width.
+//
+// One meaning per colour: blue is where Claude is and what you picked, yellow what changed and what needs you,
+// green what is supported or new, white what to read, gray the background, red what contradicts.
+
+const PANE = 'research-diff'
+const VERSION = '0.2.0' // the plugin's own, as .claude-plugin/plugin.json says (a test keeps them one)
+const WIDEST = 999 // as wide as Claude Code docks a pane: 45% of the terminal
+const COMMANDS = ['research-diff'] as const
+const VIEWS = [['now', 'Now', 'n'], ['review', 'Review', 'r'], ['evidence', 'Evidence', 'e'], ['agents', 'Agents', 'a'],
+               ['history', 'History', 'h']] as const
+
+const page = atom({ plugin: 'research-diff', key: 'page' } as const, null as Page | null, { shape: 'page-2' })
+const view = atom({ plugin: 'research-diff', key: 'view' } as const, 'now', { shape: 'view-1' })
+const part = atom({ plugin: 'research-diff', key: 'part' } as const, '', { shape: 'part-1' })
+const back = atom({ plugin: 'research-diff', key: 'back' } as const, [] as string[], { shape: 'back-2' })
+const note = atom({ plugin: 'research-diff', key: 'note' } as const, 'Reading the research…', { shape: 'note-1' })
+// How compact the diagrams are: -1 by the pane's width (compact below 110 columns), 0 full, 1 compact, 2 tiny.
+const zoomLevel = atom({ plugin: 'research-diff', key: 'zoom' } as const, -1, { shape: 'zoom-1' })
+const ZOOM_WORD = ['full', 'compact', 'tiny']
+
+// How to run research-diff: the plugin's launcher (scripts/run.sh) finds it in the project's .venv, on PATH, or in a Python
+// that has it; where there is no sh (Windows), the same places directly.
+const LAUNCHER = 'exec sh "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/cache/research-diff/research-diff/' + VERSION +
+  '}/scripts/run.sh" "$@"'
+const RUNNERS: string[][] = [
+  ['sh', '-c', LAUNCHER, 'research-diff'],
+  ['.venv/bin/python', '-m', 'research_diff'], ['.venv/Scripts/python.exe', '-m', 'research_diff'], ['research-diff'],
+  ['python3', '-m', 'research_diff'], ['python', '-m', 'research_diff'], ['py', '-3', '-m', 'research_diff'],
+]
+const COLORS: Record<string, string> = {
+  accent: 'blue', focus: 'blue', attention: 'yellow', changed: 'yellow', good: 'green', added: 'green',
+  removed: 'red', network: 'magenta',
+}
+
+let runner: string[] | undefined
+let busy = false
+let again = false
+let columns = 100 // the pane's body width, as last drawn or reported by the page: drawing may not write state
+let last = '' // the last page drawn, so an unchanged look redraws nothing
+// What the web page's Send to Claude box asked for, by id: waiting to be taken by the session, being submitted now,
+// or taken. The page hands each item over once (the outbox is emptied as it is read), so one the session refuses
+// waits here for the next look.
+const waiting = new Map<string, string>()
+const trying = new Set<string>()
+const sent = new Set<string>()
+let regionTop = 1 // rows above the page in the pane's body: the tabs, and a note while there is one
+let windowAt = 0 // the pane's scroll: its first row showing, and how many show
+let windowRows = 40
+let wantOffset: number | null = null
+
+const LONGEST = 300000 // how long a read of the research may take: a first one in a large repository is slow
+
+// The last error from a research-diff that is there but failed (not one that is missing), to show in place of the page.
+let failure = ''
+
+async function run($: EngineInterface, argv: string[]): Promise<{ out: string; old: boolean } | null> {
+  failure = ''
+  for (const how of runner ? [runner] : RUNNERS) {
+    const began = Date.now()
+    const settled = { done: false }
+    try {
+      const pending = $.process.run([...how, ...argv], { timeoutMs: LONGEST })
+      void pending.then(() => { settled.done = true }, () => { settled.done = true })
+      const got = await pending
+      // a way that answers with nothing (a launcher that found no research-diff) is not one: try the next
+      if (got.exitCode === 0 && (got.stdout.trim() !== '' || runner)) {
+        runner = how
+        return { out: got.stdout, old: false }
+      }
+      if (/unrecognized arguments|invalid choice/.test(got.stderr)) return { out: '', old: true }
+      const lines = got.stderr.split(/\r?\n/).filter(l => l.trim())
+      if (lines.length && !/No module named|not found|not recognized|cannot find/i.test(got.stderr)) {
+        failure = lines[lines.length - 1].trim().slice(0, 200)
+      }
+    } catch {
+      if (Date.now() - began >= LONGEST - 1000) { // it ran, and ran too long: no other way will do better
+        failure = `reading the research took over ${LONGEST / 60000} minutes`
+        return null
+      }
+      // not this way: try the next
+    }
+  }
+  return null
+}
+
+// Submit what was typed in the web page as the person's own words, each id once. The call resolves only as its turn
+// starts (once the session is idle), so the look does not wait for it; and one made where the session will not take it
+// (inside the /research-diff command's own hook) is tried again at the next look, the one on the clock.
+function deliver($: EngineInterface, send: Page['send']): void {
+  for (const item of Array.isArray(send) ? send : []) {
+    if (!item || typeof item.id !== 'string' || typeof item.text !== 'string' || !item.text) continue
+    if (!sent.has(item.id)) waiting.set(item.id, item.text)
+  }
+  for (const [id, text] of waiting) {
+    if (trying.has(id)) continue
+    trying.add(id)
+    const done = (ok: boolean) => {
+      trying.delete(id)
+      if (!ok) return
+      waiting.delete(id)
+      sent.add(id)
+    }
+    try {
+      $.prompt.submit({ text, asUser: true }).then(() => done(true), () => done(false))
+    } catch {
+      done(false)
+    }
+  }
+}
+
+// The last page of each project, kept across sessions: a pane opens on it at once, and the fresh one replaces it when
+// it is read (a large repository takes a few seconds even when nothing changed). The few most recent projects.
+const KEPT = 6
+let restored = false
+
+async function projectKey($: EngineInterface): Promise<string> {
+  try {
+    return 'page:' + (await $.session.root())
+  } catch {
+    return ''
+  }
+}
+
+async function restore($: EngineInterface): Promise<void> {
+  if (restored) return
+  restored = true
+  if ((await read($, page)) !== null) return
+  const key = await projectKey($)
+  if (!key) return
+  try {
+    const kept = await $.store.get(key)
+    if (typeof kept !== 'string') return
+    const data = JSON.parse(kept) as Page
+    await update($, page, () => ({ ...data, send: [] })) // what it once had to send was sent then
+    await update($, note, () => 'As you last saw it: reading the research for what changed since…')
+  } catch {
+    // only a head start
+  }
+}
+
+let keptAt = 0
+
+async function keep($: EngineInterface, out: string): Promise<void> {
+  if (Date.now() - keptAt < 15000) return // at most every few seconds: a head start need not be the very last page
+  keptAt = Date.now()
+  const key = await projectKey($)
+  if (!key) return
+  try {
+    await $.store.set(key, out)
+    const order = ((await $.store.get('pages')) as string[] | undefined ?? []).filter(k => k !== key)
+    order.unshift(key)
+    for (const old of order.slice(KEPT)) await $.store.delete(old)
+    await $.store.set('pages', order.slice(0, KEPT))
+  } catch {
+    // only a head start
+  }
+}
+
+// What a look asks for: the view, the part, the width and the zoom. A page laid out for another ask (one the person
+// has since moved away from) is not drawn.
+async function asking($: EngineInterface, since?: number): Promise<{ argv: string[]; key: string }> {
+  const level = await read($, zoomLevel)
+  const shown = await read($, view)
+  const zoomed = await read($, part)
+  // --since first, so the rest reads as a key request's does
+  const argv = ['panel', '--protocol', '2', ...(since === undefined ? [] : ['--since', String(since)]),
+                '--width', String(columns), '--view', shown, '--part', zoomed]
+  if (level >= 0) argv.push('--zoom', String(level)) // left out, the engine picks by the width (older ones too)
+  return { argv, key: [columns, shown, zoomed, level].join('|') }
+}
+
+let noted = false // the last page applied left a progress note over the diagram: it stays until a real page
+let drawnVersion = -1 // the engine's model version of the page drawn (-1: none yet, or read without an engine)
+let drawnKey = '' // the ask it was drawn for
+
+// Draw a page answered for `key`, unless the person has moved on since (then only what it brought to send is kept),
+// or it is older than the one drawn for the same ask.
+async function apply($: EngineInterface, out: string, data: Page, key: string): Promise<boolean> {
+  deliver($, data.send)
+  if (key !== (await asking($)).key) return false
+  const v = typeof data.version === 'number' ? data.version : -1
+  if (v >= 0 && v < drawnVersion && key === drawnKey) return false
+  // Never trade a drawn diagram for less: a page that only says the research is being read (the engine restarting,
+  // no page kept yet) keeps the diagram on screen with the progress as a note, and an empty page draws nothing.
+  const shownPage = await read($, page)
+  const placeholder = !!data.reading && !data.reading.stale && !(data.blocks?.length)
+  if (placeholder && shownPage && !shownPage.reading && (shownPage.rows?.length ?? 0) > 0) {
+    const said = (data.rows?.[0] ?? []).map(run => run[0]).join('').trim()
+    if (said) await update($, note, () => said)
+    noted = !!said
+    return true
+  }
+  noted = false
+  if (!(data.rows?.length)) return false
+  drawnVersion = v
+  drawnKey = key
+  if (out !== last) {
+    last = out
+    await update($, page, () => data)
+    // a page that only says the engine is starting is not one to open on next time: the last real page is
+    if (!data.reading?.stage) void keep($, out)
+  }
+  return true
+}
+
+async function refresh($: EngineInterface): Promise<void> {
+  if (busy) {
+    again = true // asked while a look runs: look again right after
+    return
+  }
+  busy = true
+  try {
+    await restore($)
+    do {
+      again = false
+      const { argv, key } = await asking($)
+      const got = await run($, argv)
+      if (got && !got.old) {
+        let data: Page
+        try {
+          data = JSON.parse(got.out) as Page
+        } catch {
+          runner = undefined // look for research-diff again next time
+          await update($, note, () => `research-diff answered with something that is not its page: ${got.out.trim().slice(0, 160)}`)
+          continue
+        }
+        await apply($, got.out, data, key)
+        if (!noted && (await read($, note)) !== '') await update($, note, () => '')
+        void longPoll($).catch(() => undefined) // the engine answered: follow it
+      } else {
+        await update($, note, () => failure
+          ? `research-diff is installed but failed here: ${failure}`
+          : got?.old
+          ? 'This pane needs a newer research-diff: pip install -U "research-diff[mcp]" (or pipx upgrade research-diff)'
+          : 'research-diff is not installed. In a terminal: pip install "research-diff[mcp]" (Python 3.11+), ' +
+            'then restart Claude Code.')
+      }
+    } while (again)
+  } finally {
+    busy = false
+  }
+}
+
+// The engine's long poll: `panel --since <version>` answers when the model has a newer version than the one drawn
+// (or after about 25 s with what it has), so the pane redraws the moment Claude's edit lands, with no looks between.
+// One at a time, beside the looks the keys ask for, which never wait for it; each answer schedules the next on the
+// clock. It runs only while the engine answers (a page with a version): with no engine yet, the clock looks every
+// 3 s (research-diff starts one meanwhile) until one does. A failure backs off a few seconds and leaves the pane on the
+// clock; a research-diff without --since leaves it there for good.
+const LONG_POLL_MS = 40000 // the engine holds a long poll about 25 s
+let polling = false // a long poll is under way
+let pollKey = '' // its ask: one the person has moved away from leaves the clock looking
+let pollLive = false // the engine answers: the long poll carries the pane, the clock need not look
+let pollOld = false // this research-diff has no --since
+let pollFails = 0
+let pollNext: { cancel: () => void } | undefined // the next long poll, waiting on the clock
+
+function pollAfter($: EngineInterface, ms: number): void {
+  try {
+    pollNext = $.clock.after(ms, () => {
+      pollNext = undefined
+      longPoll($).catch(() => undefined)
+    })
+  } catch {
+    pollNext = undefined // refused (a session closing): the clock's next look starts it again
+  }
+}
+
+async function longPoll($: EngineInterface): Promise<void> {
+  if (polling || pollOld || !runner || drawnVersion < 0) return
+  if (pollNext) { // asked again before the one waiting (a look found the engine): now, not after the back-off
+    pollNext.cancel()
+    pollNext = undefined
+  }
+  polling = true
+  let after = -1 // when the next one goes, in ms; -1: none (the clock carries the pane)
+  try {
+    const how = runner
+    const { argv, key } = await asking($, drawnVersion)
+    pollKey = key
+    let got
+    try {
+      got = await $.process.run([...how, ...argv], { timeoutMs: LONG_POLL_MS })
+    } catch {
+      got = null
+    }
+    pollKey = ''
+    let data: Page | null = null
+    if (got && got.exitCode === 0) {
+      try {
+        data = JSON.parse(got.stdout) as Page
+      } catch {
+        data = null
+      }
+    } else if (got && /unrecognized arguments|invalid choice/.test(got.stderr)) {
+      pollOld = true
+      pollLive = false
+      return
+    }
+    if (data === null) {
+      pollLive = false
+      pollFails += 1
+      after = Math.min(30000, 1000 * 2 ** Math.min(pollFails, 5)) // 2 s, 4 s, … then every 30 s
+      return
+    }
+    pollFails = 0
+    const before = drawnVersion
+    const drawn = await apply($, got!.stdout, data, key)
+    if (typeof data.version !== 'number') { // answered by a read of its own: no engine now, the clock looks
+      pollLive = false
+      return
+    }
+    pollLive = true
+    if (drawn && !noted && (await read($, note)) !== '') await update($, note, () => '')
+    // a newer page, or one for what no longer shows: at once; nothing new (it waited its 25 s): a moment later
+    after = drawn && drawnVersion === before ? 500 : 0
+  } finally {
+    polling = false
+    pollKey = ''
+    if (after >= 0) pollAfter($, after)
+  }
+}
+
+// The clock's look, every 3 s: only when the long poll does not carry the pane (no engine, an old research-diff, a
+// failure, or a long poll still waiting on what the person has moved away from). What the session refused to take is
+// offered again.
+async function tick($: EngineInterface): Promise<void> {
+  deliver($, [])
+  const current = (await asking($)).key
+  if (!pollLive || pollOld || (pollKey !== '' && pollKey !== current)) await refresh($)
+  else if (!polling && !pollNext) void longPoll($).catch(() => undefined) // lost (a refused timer): again
+}
+
+// A look in the background: one that fails (a session closing, a slow disk) is let go, the next comes soon enough.
+function soon($: EngineInterface): void {
+  refresh($).catch(() => undefined)
+}
+
+async function choose($: EngineInterface, next: string): Promise<void> {
+  const from = await read($, view)
+  // the History tab starts on the whole study; leaving it, its block (or entry) is not a part to zoom in on
+  if ((next === 'history') !== (from === 'history')) await update($, part, () => '')
+  await update($, view, () => next)
+  await refresh($)
+}
+
+// The History view of a block (a node of the research; '' the whole study), or one entry of the History shown (on the
+// diagram), remembering where the person was so b goes back there: a back step is "<view>\t<part>".
+async function history($: EngineInterface, block: string, entry?: string): Promise<void> {
+  const fromView = await read($, view)
+  const fromPart = await read($, part)
+  const next = entry === undefined ? block : `${fromView === 'history' ? fromPart.split('#')[0] : ''}#${entry}`
+  if (fromView === 'history' && fromPart === next) return
+  await update($, back, list => [...list, `${fromView}\t${fromPart}`].slice(-20))
+  await update($, part, () => next)
+  await update($, view, () => 'history')
+  await refresh($)
+}
+
+async function zoom($: EngineInterface, id: string): Promise<void> {
+  const from = await read($, part)
+  if (from !== id) await update($, back, list => [...list, from].slice(-20))
+  await update($, part, () => id)
+  await update($, view, () => 'now')
+  await refresh($)
+}
+
+async function goBack($: EngineInterface): Promise<void> {
+  const list = await read($, back)
+  if (list.length === 0) return
+  await update($, back, () => list.slice(0, -1))
+  const step = list[list.length - 1] ?? ''
+  const tab = step.indexOf('\t')
+  if (tab >= 0) await update($, view, () => step.slice(0, tab)) // a step back out of History: its view too
+  await update($, part, () => (tab >= 0 ? step.slice(tab + 1) : step))
+  await refresh($)
+}
+
+async function follow($: EngineInterface): Promise<void> {
+  await update($, back, () => [])
+  await update($, part, () => '')
+  await update($, view, () => 'now')
+  await refresh($)
+}
+
+// x on an objective: the person says it is wrong. Only research-diff's own notes change (never the code); the
+// objective leaves the page and Claude's context, and `research-diff objectives restore <id>` brings it back.
+async function clearObjective($: EngineInterface, id: string): Promise<void> {
+  if (!id) return
+  await run($, ['objectives', 'clear', id])
+  await refresh($)
+}
+
+// Bring a row of the page into view when the keys pick a block below or above the pane's window.
+async function reveal($: EngineInterface, y: number): Promise<void> {
+  const row = regionTop + y
+  if (row >= windowAt && row < windowAt + windowRows - 1) return
+  wantOffset = Math.max(0, row - Math.floor(windowRows / 3))
+  try {
+    await $.ui.scroll({ to: 'start', in: PANE })
+  } catch {
+    wantOffset = null
+  }
+}
+
+// Scroll the pane by rows, for the keys of a page that has them (shift ↑ ↓, Page Up and Down).
+async function scrollBy($: EngineInterface, rows: number): Promise<void> {
+  const by = Math.abs(rows) >= 1000 ? Math.sign(rows) * Math.max(1, windowRows - 2) : rows
+  wantOffset = Math.max(0, windowAt + by)
+  try {
+    await $.ui.scroll({ to: 'start', in: PANE })
+  } catch {
+    wantOffset = null
+  }
+}
+
+// As wide as Claude Code docks a pane, the first time: a width the person set (dragged, or with the pane's keys:
+// ctrl+x ← →) is theirs from then on.
+// More of the research in the pane (zoom out, +1) or bigger boxes (zoom in, -1), from where the page is drawn now.
+async function zoomBy($: EngineInterface, by: number): Promise<void> {
+  const drawnAt = (await read($, page))?.zoom ?? 0
+  await update($, zoomLevel, () => Math.max(0, Math.min(2, drawnAt + by)))
+  await refresh($)
+}
+
+// `/research-diff tui`: the same views in a terminal of their own (`research-diff tui`). A plugin cannot type into another
+// terminal, so it opens one where it can (a tmux window, Windows Terminal, macOS Terminal, a Linux desktop's terminal)
+// and always answers with the command to run, for when it cannot.
+const TUI_LINUX = '[ -n "$DISPLAY$WAYLAND_DISPLAY" ] || exit 1; cd "$1" || exit 1; shift; ' +
+  'if command -v gnome-terminal >/dev/null 2>&1; then gnome-terminal -- "$@" >/dev/null 2>&1 & exit 0; fi; ' +
+  'for t in x-terminal-emulator konsole xfce4-terminal xterm; do if command -v "$t" >/dev/null 2>&1; then ' +
+  'nohup "$t" -e "$@" >/dev/null 2>&1 & exit 0; fi; done; exit 1'
+
+async function terminal($: EngineInterface): Promise<string> {
+  const got = await run($, ['tui', '--command'])
+  if (got?.old) return 'The terminal view needs a newer research-diff: pip install -U "research-diff[mcp]" (or pipx upgrade research-diff)'
+  if (!got) {
+    return failure ? `research-diff is installed but failed here: ${failure}`
+      : 'research-diff is not installed. In a terminal: pip install "research-diff[mcp]" (Python 3.11+), then: research-diff tui'
+  }
+  let argv = ['research-diff', 'tui']
+  let line = 'research-diff tui'
+  try {
+    const said = JSON.parse(got.out) as { argv?: unknown; line?: unknown }
+    if (Array.isArray(said.argv) && said.argv.every(a => typeof a === 'string') && typeof said.line === 'string') {
+      argv = said.argv as string[]
+      line = said.line
+    }
+  } catch {
+    // the plain command, then
+  }
+  let dir = ''
+  try {
+    dir = await $.session.root()
+  } catch {
+    // the session's own directory, then
+  }
+  const ps = (text: string) => `'${text.replace(/'/g, "''")}'`
+  const apple = (text: string) => text.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+  const sq = (text: string) => `'${text.replace(/'/g, `'\\''`)}'`
+  const tries: Array<[string, string[]]> = [
+    ['in a new tmux window', ['sh', '-c', '[ -n "$TMUX" ] && exec tmux new-window -c "$1" "$2"', 'sh', dir || '.', line]],
+    ...(dir ? [['in a new Windows Terminal tab', ['wt', '-w', '0', 'new-tab', '-d', dir, ...argv]] as [string, string[]]] : []),
+    ['in a new Terminal window', ['osascript', '-e',
+      `tell application "Terminal" to do script "${apple((dir ? `cd ${sq(dir)} && ` : '') + line)}"`,
+      '-e', 'tell application "Terminal" to activate']],
+    ['in a new terminal window', ['sh', '-c', TUI_LINUX, 'sh', dir || '.', ...argv]],
+    ['in a new window', ['powershell', '-NoProfile', '-Command', `Start-Process -FilePath ${ps(argv[0] ?? '')}` +
+      (argv.length > 1 ? ` -ArgumentList ${ps(argv.slice(1).join(' '))}` : '') + (dir ? ` -WorkingDirectory ${ps(dir)}` : '')]],
+  ]
+  const where = dir ? `, in ${dir}` : ''
+  for (const [how, cmd] of tries) {
+    try {
+      const done = await $.process.run(cmd, { timeoutMs: 10000 })
+      if (done.exitCode === 0) {
+        return `Opened the Research diff ${how}. If it did not open, run this in a new terminal${where}:\n  ${line}`
+      }
+    } catch {
+      // not here: the next way
+    }
+  }
+  return `Run this in a new terminal tab or window${where}:\n  ${line}\n(No terminal could be opened from here.)`
+}
+
+function open($: EngineInterface) {
+  return $.ui.open({ id: PANE, title: 'Research diff', columns: WIDEST })
+}
+
+export const register: Register = on => {
+  on('session.start', async ($, e, next) => {
+    void open($)
+    // `/research-diff` opens it; `/research-diff-pane` too, the name it had first. A name someone else holds is skipped.
+    for (const name of COMMANDS) {
+      try {
+        await $.command.register({ name, description: 'Show the Research diff pane beside the chat (close: hide it; ' +
+                                     'tui: the same in a terminal of its own)', argumentHint: '[close|tui]' })
+      } catch {
+        // taken
+      }
+    }
+    soon($)
+    $.clock.every(3000, () => void tick($).catch(() => undefined))
+    return next(e)
+  })
+
+  for (const command of COMMANDS) {
+    on('command.run', { command }, async ($, e) => {
+      if (e.args.trim().toLowerCase() === 'close') {
+        await $.ui.close({ id: PANE })
+        return { text: 'Research diff pane closed. /research-diff opens it again.' }
+      }
+      if (e.args.trim().toLowerCase() === 'tui') return { text: await terminal($) }
+      await refresh($)
+      await open($)
+      return { text: 'Research diff pane opened.' }
+    })
+  }
+
+  // The engine's own diff of the files sits beside this one: name it for what it is.
+  on('ui.open', async ($, e, next) => next(e.title === 'Diff' ? { ...e, title: 'File diff' } : e))
+
+  on('tool.call', async ($, e, next) => {
+    const ran = await next(e)
+    // the long poll follows the engine, which the hooks tell of each edit; without it, a look now
+    if (!pollLive && ['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Read'].includes(e.tool)) soon($)
+    return ran
+  })
+
+  // The pane's own scroll: kept, and moved where a reveal asked.
+  on('ui.scroll', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
+    windowRows = e.bodyRows
+    if (wantOffset !== null && e.origin.kind === 'plugin') {
+      const offset = wantOffset
+      wantOffset = null
+      windowAt = offset
+      return next({ ...e, offset })
+    }
+    windowAt = e.offset
+    return next(e)
+  }).catch(($, e, next) => next(e)) // a failure here must never hold the person's own scrolling
+
+  // What the page (page.tsx) asks for.
+  on('ui.message', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    const data = (e.data ?? {}) as Act & { back?: boolean; follow?: boolean; width?: number; reveal?: number;
+                                             scrollBy?: number; zoomBy?: number }
+    if (typeof data.width === 'number' && data.width > 0 && data.width !== columns) {
+      columns = data.width
+      await refresh($)
+    } else if (typeof data.reveal === 'number') await reveal($, data.reveal)
+    else if (typeof data.scrollBy === 'number') await scrollBy($, data.scrollBy)
+    else if (typeof data.zoom === 'string') await zoom($, data.zoom)
+    else if (typeof data.clear_objective === 'string') await clearObjective($, data.clear_objective)
+    else if (typeof data.history === 'string') await history($, data.history)
+    else if (typeof data.entry === 'string') await history($, '', data.entry)
+    else if (data.back) await goBack($)
+    else if (data.follow) await follow($)
+    else if (typeof data.zoomBy === 'number') await zoomBy($, data.zoomBy)
+    else if (typeof data.view === 'string') await choose($, data.view)
+    return {}
+  })
+
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    const elements = $.ui.resolve(e)
+    const { Box, Text, Button } = elements
+    // A surface that draws a module's region (the terminal, desktop) gets the page with keys and clicks; any other
+    // its rows as text and its blocks as buttons.
+    const Client = (e.surface === 'terminal' || e.surface === 'desktop') && 'Client' in elements
+      ? elements.Client : undefined
+    columns = e.props.bodyColumns || columns // the next look is laid out for it
+    windowAt = e.props.scroll.offset
+    windowRows = e.props.scroll.bodyRows
+    const drawn = await read($, page)
+    // Above the chat (Claude Code's main-screen layout), it says how to have it beside the chat instead.
+    const said = (await read($, note)) || (e.props.placement === 'inline'
+      ? 'Beside the chat instead: set CLAUDE_CODE_NO_FLICKER=1 (Windows: setx CLAUDE_CODE_NO_FLICKER 1) and restart Claude Code.'
+      : '')
+    const now = await read($, view)
+    const zoomed = await read($, part)
+    const behind = await read($, back)
+    regionTop = 1 + (said !== '' ? 1 : 0)
+
+    const line = (row: Row, i: number) =>
+      row.length === 0 ? (
+        <Text key={`r${i}`}> </Text>
+      ) : (
+        <Text key={`r${i}`} wrap="truncate-end">
+          {row.map(([text, style]) => {
+            const words = style.split(' ')
+            const color = words.map(w => COLORS[w]).find(Boolean)
+            return (
+              <Text color={color} bold={['bold', 'heading', 'attention'].some(w => words.includes(w))}
+                    dimColor={(words.includes('muted') || words.includes('heading')) && !color}>
+                {text}
+              </Text>
+            )
+          })}
+        </Text>
+      )
+
+    return (
+      <Box flexDirection="column">
+        <Box flexDirection="row" gap={2}>
+          {VIEWS.map(([id, label, key]) => (
+            <Button key={`view-${id}`} hotkey={key} plain onPress={() => void choose($, id)}>
+              {now === id ? <Text color="blue" bold underline>{label}</Text> : <Text dimColor>{label}</Text>}
+            </Button>
+          ))}
+          {zoomed !== '' && (
+            <Button key="follow" hotkey="f" plain onPress={() => void follow($)}>
+              <Text color="blue">● Follow Claude</Text>
+            </Button>
+          )}
+          {behind.length > 0 && (
+            <Button key="back" hotkey="b" plain onPress={() => void goBack($)}><Text dimColor>← Back</Text></Button>
+          )}
+          {drawn?.web ? <Text key="web" dimColor>{`🌐 ${drawn.web}`}</Text> : null}
+          <Button key="zoom-out" plain onPress={() => void zoomBy($, 1)}><Text dimColor>⊖</Text></Button>
+          <Text dimColor>{ZOOM_WORD[drawn?.zoom ?? 0] ?? 'full'}</Text>
+          <Button key="zoom-in" plain onPress={() => void zoomBy($, -1)}><Text dimColor>⊕</Text></Button>
+          <Button key="close" plain onPress={() => void $.ui.close({ id: PANE })}><Text dimColor>× close</Text></Button>
+        </Box>
+        {said !== '' && <Text dimColor>{said}</Text>}
+        {drawn !== null && Client !== undefined && (
+          <Client key="page" module="./page.tsx" width="100%" props={{ page: drawn, canGoBack: behind.length > 0 }} />
+        )}
+        {drawn !== null && Client === undefined && drawn.rows.map(line)}
+        {drawn !== null && Client === undefined && (
+          <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+            {drawn.blocks.filter(b => b.enter?.zoom).slice(0, 40).map(b => (
+              <Button key={`block-${b.id}`} plain onPress={() => void zoom($, b.enter?.zoom ?? '')}>
+                {b.id.replace(/^b:(g:)?/, '')}
+              </Button>
+            ))}
+            {drawn.blocks.filter(b => b.enter?.history !== undefined).slice(0, 40).map(b => (
+              <Button key={`block-${b.id}`} plain onPress={() => void history($, b.enter?.history ?? '')}>
+                {`${b.id.replace(/^b:(g:)?/, '')} history`}
+              </Button>
+            ))}
+            {drawn.blocks.filter(b => b.enter?.entry !== undefined).slice(0, 20).map((b, i) => (
+              <Button key={`block-${b.id}`} plain onPress={() => void history($, '', b.enter?.entry ?? '')}>
+                {`change ${i + 1}`}
+              </Button>
+            ))}
+          </Box>
+        )}
+        <Box flexDirection="row" justifyContent="flex-end"><Text dimColor>{`v${VERSION}`}</Text></Box>
+      </Box>
+    )
+  })
+}

@@ -3,5 +3,25 @@
 % C1: Small batches give better accuracy on small datasets
 % relies on: H1, R1
 % expects: E1.results acc.batch32 > 0.85
+% by: batch-agent
 On the 8k split, batch 32 reaches 87.4\% against 84.2\% for batch 512, in line with
 earlier work \cite{keskar2017large,masters2018revisiting}.
+
+% F1: Scaling the learning rate closes the gap
+% supported by: R2
+% by: lr-agent
+With the learning rate scaled linearly, batch 512 reaches 87.2\%.
+
+\section{Discussion}
+
+% C2: Batch size does not matter once the learning rate is scaled
+% relies on: F1, H3
+% contradicts: C1
+% by: lr-agent
+The gap is an optimisation artefact \cite{goyal2017accurate}.
+
+% C3: Practitioners should prefer small batches on small data
+% relies on: C1
+% expects: E2.results acc.batch512 < 0.85
+% by: batch-agent
+We recommend batch sizes of 32 or less below 10k examples.

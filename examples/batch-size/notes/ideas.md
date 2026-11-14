@@ -6,6 +6,7 @@
 
 answers: Q1
 status: supported
+by: batch-agent
 
 ## H2: Learning-rate warm-up removes the gap
 
@@ -13,3 +14,9 @@ answers: Q1
 status: open
 
 The idea: the gap may be an optimisation artefact rather than a generalisation one.
+
+## H3: With the learning rate scaled to the batch, batch size stops mattering
+
+answers: Q1
+status: open
+by: lr-agent

@@ -26,8 +26,10 @@ def test_the_diff_says_what_the_iteration_did(repo, files):
                  "notes/ideas.md": (repo / "notes/ideas.md").read_text().replace("status: open", "status: refuted"),
                  "notes/h3.md": "## H3: Width matters more than batch\n\nanswers: Q1\n"})
     d = compare.compare(repo, "HEAD", ".").diff
-    assert d["headline"] == ("Adds 1 hypothesis (H3); H1: open → refuted; E1.results acc.b32: 0.874 → 0.881 (+0.007 "
+    assert d["headline"] == ("1 new contradiction (C1 relies on H1, which is refuted); C1: no evidence → contradicted; "
+                             "adds 1 hypothesis (H3); H1: open → refuted; E1.results acc.b32: 0.874 → 0.881 (+0.007 "
                              "(+0.8%)); 1 new link; 2 new warnings (C1 relies on H1, which is refuted…).")
+    assert "+ contradiction H1 → C1 — C1 relies on H1, which is refuted   [new-contradiction]" in d["plan"]
     assert "~ status H1 — H1: open → refuted   [refuted]" in d["plan"]
     assert "+ warning H3 is open and no experiment tests it   [new-warning]" in d["plan"]
 
@@ -57,7 +59,8 @@ def test_a_logged_result_is_on_the_map_and_in_the_next_diff(repo, monkeypatch):
     from research_diff import mcp_server
     monkeypatch.chdir(repo)
     assert {t.name for t in asyncio.run(mcp_server.build().list_tools())} == {
-        "research_map", "research_diff", "log_result", "checkpoint"}
+        "research_map", "research_diff", "research_evidence", "explain", "log_result", "plan_agents", "claim",
+        "publish", "inbox", "research_objectives", "checkpoint"}
     got = mcp_server.tool_log(repo, "E1", {"acc": 0.9}, "Batch 32 again", supports=["H1"])
     assert got == {"recorded": "R1", "in": "research/log.md"}
     d = mcp_server.tool_diff(repo, "HEAD")
@@ -73,6 +76,8 @@ def test_setup_wires_the_hook_and_the_skill_and_undo_takes_them_back(repo, tmp_p
     agent.setup_claude(repo, "user", out=lambda s: None)
     settings = json.loads((home / ".claude" / "settings.json").read_text())
     assert settings["hooks"]["Stop"][0]["hooks"][0]["command"].endswith("-m research_diff hook")
+    assert set(settings["hooks"]) == {"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "SubagentStop"}
+    assert settings["statusLine"]["command"].endswith("-m research_diff statusline")
     assert (home / ".claude" / "skills" / "research-diff" / "SKILL.md").is_file()
     agent.setup_claude(repo, "user", undo=True, out=lambda s: None)
     assert json.loads((home / ".claude" / "settings.json").read_text()) == {}
@@ -87,14 +92,40 @@ def test_the_command_line_map_check_and_diff(repo, tmp_path, capsys):
 
 
 def test_the_live_page_shows_the_change_and_mark_as_seen_clears_it(repo, files):
+    import threading
+    import urllib.request
     from research_diff import watch
     files(repo, {"notes/h3.md": "## H3: Width matters\n"})
-    w = watch.Watcher(repo, interval=60)
-    w.tick()
-    assert "H3" in w.snapshot_state()["headline"] and w.snapshot_state()["svg"].startswith("<svg")
-    w.mark_seen()
-    assert w.snapshot_state()["changes"] == 0
-    assert "Research diff" in watch.PAGE
+    got = {}
+    ready = threading.Event()
+
+    def on_ready(url, server, w):
+        got.update(url=url, server=server, w=w)
+        ready.set()
+    threading.Thread(target=watch.serve, args=(repo, "checkpoint", 0), kwargs={"ready": on_ready, "interval": 0.2},
+                     daemon=True).start()
+    assert ready.wait(10)
+    url, w = got["url"], got["w"]
+    read = lambda path: urllib.request.urlopen(url + path, timeout=10).read().decode()  # noqa: E731
+    assert "Research diff" in read("")
+    review = json.loads(read("view?v=review"))
+    assert "H3" in review["html"] and review["picture"].startswith("<svg")
+    assert "<svg" in read("evidence") and "Small batches win" in read("evidence")
+    req = urllib.request.Request(url + "mark", method="POST", data=b"")
+    try:
+        urllib.request.urlopen(req, timeout=10)
+        raise AssertionError("a mark without the page's token was taken")
+    except urllib.error.HTTPError as exc:
+        assert exc.code == 403
+    req = urllib.request.Request(url + "mark", method="POST", data=b"", headers={"x-token": w.token})
+    urllib.request.urlopen(req, timeout=10)
+    assert compare.compare(repo).diff["changes"] == []
+    req = urllib.request.Request(url + "send", method="POST", data=json.dumps({"text": "rerun E1"}).encode(),
+                                 headers={"x-token": w.token, "content-type": "application/json"})
+    urllib.request.urlopen(req, timeout=10)
+    from research_diff import page
+    assert [x["text"] for x in page.take_outbox(repo)] == ["rerun E1"] and page.take_outbox(repo) == []
+    got["server"].shutdown()
 
 
 def test_tracker_runs_tagged_with_an_experiment_become_its_results(repo, files):

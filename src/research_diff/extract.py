@@ -11,6 +11,10 @@ paragraph gives its sources (`\\cite{…}`). In a script, notebook or config it 
 H2`. A YAML/JSON/TOML config may instead carry a `research:` block: `{id: E5, tests: [H2], results: out/e5.json}`;
 the results file (JSON or CSV) becomes the result `E5.results` with its numbers as metrics.
 
+EVIDENCE. `supports:`, `weakens:` and `contradicts:` (also `refutes:`) say what a result, a finding or a claim does to
+another; written on the other end they read backwards: `supported by: R1`, `contradicted by: R4`, `weakened by: R2`.
+`by: <agent>` names who (which agent) owns a marker. A claim or finding in the paper also knows its paper section.
+
 The map is built from markers only, so the same files give the same map. `research-diff suggest` asks an LLM to
 propose markers for what is untagged; it never writes them.
 """
@@ -29,12 +33,17 @@ from system_diff.config import segment_rx
 from system_diff.extract import glob_rx
 
 RELS = {"answers": "answers", "tests": "tests", "of": "of", "supports": "supports", "weakens": "weakens",
+        "contradicts": "contradicts", "refutes": "contradicts", "conflicts with": "contradicts",
         "relies on": "relies on", "relies": "relies on", "depends on": "relies on", "based on": "relies on"}
-ATTRS = ("status", "metrics", "results", "sources", "source", "expects")
-KEYS = "|".join(sorted(list(RELS) + list(ATTRS), key=len, reverse=True))
+# Written on the other end: `C1 supported by: R1` is `R1 supports C1`.
+REVERSE = {"supported by": "supports", "evidence": "supports", "weakened by": "weakens",
+           "contradicted by": "contradicts", "refuted by": "contradicts"}
+ATTRS = ("status", "metrics", "results", "sources", "source", "expects", "by", "owner", "section")
+KEYS = "|".join(sorted(list(RELS) + list(REVERSE) + list(ATTRS), key=len, reverse=True))
 ATTR_RX = re.compile(rf"^\s*(?:[-*+]\s+)?\**({KEYS})\**\s*:\s*(.+?)\s*$", re.I)
 COMMENT_RX = re.compile(r"(?:#|//|%)\s*research-diff:\s*(.+)$", re.M)
 CITE_RX = re.compile(r"\\(?:cite[pt]?|citeauthor|citeyear)\*?(?:\[[^\]]*\])*\{([^}]+)\}")
+SECTION_RX = re.compile(r"\\(?:part|chapter|section|subsection|subsubsection|paragraph)\*?(?:\[[^\]]*\])?\{([^}]*)\}")
 NUM_RX = re.compile(r"^-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?$")
 
 
@@ -83,6 +92,13 @@ class Model:
         if key in RELS:
             for target in _ids(value, self.kinds):
                 self.links.add((nid, RELS[key], target))
+        elif key in REVERSE:
+            for source in _ids(value, self.kinds):
+                self.links.add((source, REVERSE[key], nid))
+        elif key in ("by", "owner"):
+            n["by"] = value.strip().strip("`'\"")
+        elif key == "section":
+            n["section"] = value.strip()
         elif key == "status":
             n["status"] = value.strip().lower().rstrip(".")
         elif key == "metrics":
@@ -104,7 +120,7 @@ def read_lines(m: Model, lines: Iterable[str], where: str, def_rx: re.Pattern) -
         a = ATTR_RX.match(line)
         if d and not a:
             current = d.group(1)
-            m.node(current, d.group(2).strip(" *"), where)
+            m.node(current, d.group(2).strip(" *"), where).setdefault("line", i)
             found.append((current, i, i))
         elif a and current:
             m.attr(current, a.group(1), a.group(2), where)
@@ -119,7 +135,7 @@ def read_comment(m: Model, text: str, where: str, def_rx: re.Pattern) -> None:
     last: Optional[str] = None
     for body in COMMENT_RX.findall(text):
         d = def_rx.match(body)
-        rel = re.match(rf"^([A-Za-z]\d+[a-z]?)\s+({'|'.join(RELS)})\s+(.+)$", body.strip(), re.I)
+        rel = re.match(rf"^([A-Za-z]\d+[a-z]?)\s+({'|'.join(list(RELS) + list(REVERSE))})\s+(.+)$", body.strip(), re.I)
         if rel:
             last = rel.group(1)
             m.node(last, where=where)
@@ -234,8 +250,18 @@ def extract(source, cfg: Dict[str, Any]) -> dict:
         read_lines(m, text.splitlines(), f, def_rx)
     for f, text in source.read_many(pick(cfg["paper"])).items():
         lines = text.splitlines()
+        if not f.endswith(".tex"):   # a paper written in Markdown: its headings are its sections
+            for nid, first, _last in read_lines(m, lines, f, def_rx):
+                heads = [ln.lstrip("# ").strip() for ln in lines[:first - 1]
+                         if ln.startswith("#") and not def_rx.match(ln)]
+                if heads and not m.nodes[nid].get("section"):
+                    m.nodes[nid]["section"] = heads[-1]
+            continue
         comments = [(re.search(r"(?<!\\)%(.*)$", ln) or [None, ""])[1] for ln in lines]
         for nid, first, last in read_lines(m, comments, f, def_rx):
+            heads = [h for ln in lines[:first] for h in SECTION_RX.findall(ln.split("%")[0])]
+            if heads and not m.nodes[nid].get("section"):
+                m.nodes[nid]["section"] = heads[-1].strip()
             # A claim's sources: the citations of the paragraph its marker sits in.
             lo = first
             while lo > 1 and lines[lo - 2].strip():
@@ -299,6 +325,9 @@ def extract(source, cfg: Dict[str, Any]) -> dict:
                     warnings.append(f"{nid} relies on {b}, which is refuted")
             for w in by[("weakens", nid)]:
                 warnings.append(f"{nid} is weakened by {w}")
+        if n["kind"] in ("claim", "finding"):
+            for w in by[("contradicts", nid)]:
+                warnings.append(f"{nid} is contradicted by {w}")
         for e in n.get("expects", []):
             warnings += check_expect(nid, e, nodes)
     return {"ref": source.label, "nodes": {k: nodes[k] for k in sorted(nodes, key=_order)},
@@ -307,7 +336,7 @@ def extract(source, cfg: Dict[str, Any]) -> dict:
 
 def _order(nid: str) -> tuple:
     m = re.match(r"([A-Za-z])(\d+)([a-z]?)(.*)", nid)
-    return ("QHERC".find(m.group(1)), int(m.group(2)), m.group(3), m.group(4)) if m else (9, 0, "", nid)
+    return ("QHERFC".find(m.group(1)), int(m.group(2)), m.group(3), m.group(4)) if m else (9, 0, "", nid)
 
 
 EXPECT_RX = re.compile(r"^(\S+)\s+(\S+)\s*(>=|<=|==|>|<)\s*(-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)\s*$")

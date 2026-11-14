@@ -7,9 +7,9 @@ from typing import Any, Dict, List, Optional
 
 from system_diff import pictures
 
-EDGE_KIND = {"supports": "data", "weakens": "network"}
+EDGE_KIND = {"supports": "data", "weakens": "network", "contradicts": "network"}
 LEGEND = [("band", "new", "supported"), ("dashed", "", "refuted"),
-          ("line", "call", "links"), ("line", "data", "supports"), ("line", "network", "weakens")]
+          ("line", "call", "links"), ("line", "data", "supports"), ("line", "network", "weakens or contradicts")]
 
 
 def _node(nid: str, n: dict, status: str = "") -> dict:
@@ -49,8 +49,15 @@ def diff_graph(d: dict, a: dict, b: dict, cfg: Dict[str, Any]) -> Optional[dict]
     word = {"add": "added", "remove": "removed", "change": "changed"}
     for c in d["changes"]:
         op = word[c["op"]]
-        if c["entity"] in ("question", "hypothesis", "experiment", "result", "claim"):
+        if c["entity"] in ("question", "hypothesis", "experiment", "result", "finding", "claim"):
             status[c["id"]] = op
+        elif c["entity"] == "verdict":
+            status.setdefault(c["id"], "changed")
+            lines.setdefault(c["id"], []).append({"text": c["label"].split(": ", 1)[1], "status": "changed"})
+        elif c["entity"] == "contradiction":
+            s, t = c["id"].split(" → ")
+            status.setdefault(t, "changed")
+            links_changed[(s, "contradicts", t)] = word[c["op"]]
         elif c["entity"] in ("status", "title"):
             status.setdefault(c["id"], "changed")
             if c["entity"] == "status":

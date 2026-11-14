@@ -1,0 +1,16 @@
+{
+  "name": "research-diff",
+  "owner": {
+    "name": "simplifiedmachine"
+  },
+  "metadata": {
+    "description": "research-diff for Claude Code: what supports and what contradicts each claim of your paper, live, while Claude and its agents run experiments and write."
+  },
+  "plugins": [
+    {
+      "name": "research-diff",
+      "source": "./mods/research-diff",
+      "description": "A Research diff pane beside the chat: the paper's claims with their evidence and contradictions, what changed since you last looked, and a team of agents on one study."
+    }
+  ]
+}

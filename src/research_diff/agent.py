@@ -1,55 +1,218 @@
-"""Claude Code: `research-diff hook`, run by its Stop hook after every turn, and `research-diff setup claude`, which adds
-the hook, a skill on when to show the research diff, and the MCP server. The hook never blocks and never fails a turn;
-setup prints each change, and `--undo` takes it back."""
+"""Claude Code: `research-diff hook`, which its hooks run, and `research-diff setup claude`, which wires them in with the
+status line, a skill on when to show the research diff and the evidence, and the MCP server. The hooks never block
+and never fail a turn; setup prints each change, and `--undo` takes it back.
+
+  SessionStart      starts the web page; tells Claude where the evidence stands (contradictions first), the person's
+                    objectives and the agents' plan
+  UserPromptSubmit  keeps the working tree as the start of the turn and the request in the activity log; the
+                    objectives; learning them again in the background when enough is new
+  PostToolUse       notes what was read or edited, by which agent; after an edit or a command that changed the
+                    research, publishes what it did on the bus (a contradiction to the owner of what it contradicts)
+                    and says in one line when a statement's verdict moved; hands each agent its unread messages
+  Stop              one line on what the research changed since the checkpoint; the turn into the history
+  SubagentStop      what that agent's work did to the research, on the bus and into the history
+"""
 from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Callable, Optional
 
-from system_diff.agent import _claude, _is_repo, _load, _save, _split
 from system_diff.sources import git
 
-from .compare import compare, sync_trackers
+from . import activity, agents, compare, evidence, objectives, rank, store
+from .compare import sync_trackers
+from .diff import diff
 
 NAME = "research-diff"
 SKILL_MARK = "<!-- written by research-diff setup claude -->"
 SKILL = f"""---
 name: research-diff
-description: Shows the person what an iteration did to their research (questions, hypotheses, experiments, results, claims). Use after running an experiment, changing a hypothesis, notes, a config or the paper, before asking them to review, or when they ask where the research stands.
+description: Shows the person what an iteration did to their research (questions, hypotheses, experiments, results, findings, claims) and which evidence supports or contradicts each claim of the paper. Use after running an experiment, changing a hypothesis, notes, a config or the paper, before asking them to review, when they ask where the research stands, or when several agents work on one study.
 ---
 {SKILL_MARK}
 
-# Showing the research diff
+# Showing the research diff and the evidence
 
 The research is described by markers in the repository's own files: `H2: title` with `status:`, `tests:`,
-`supports:`, `weakens:`, `relies on:` lines in notes, `% C1: …` in the paper, a `research:` block or a
+`supports:`, `weakens:`, `contradicts:`, `relies on:`, `supported by:`, `contradicted by:`, `expects:` and `by:` lines
+in notes, `% C1: …` and `% F1: …` (claims and findings) in the paper, a `research:` block or a
 `# research-diff: E5 tests H2` comment in experiment configs and scripts.
 
-1. When you add an idea, an experiment or a claim, write its marker, so it is on the map.
-2. After running an experiment, record what came out with the `log_result` tool (the metrics, and which hypothesis it
-   supports or weakens), or as a results file the experiment's `research:` block names.
-3. Call `research_diff` and tell the person, in two or three plain sentences built only from its plan, what changed:
-   statuses that moved, numbers that changed, new warnings (a claim relying on a refuted hypothesis, an open hypothesis
-   no experiment tests).
-4. Point them at the picture, or at `research-diff watch` for a live page.
-5. When they say they have understood it, call `checkpoint`, so the next diff shows only what is new to them.
+1. When you add an idea, an experiment, a finding or a claim, write its marker, so it is on the map. When a result
+   speaks against a statement, say so with `contradicts:` or `weakens:`: never hide it.
+2. After running an experiment, record what came out with the `log_result` tool, or as a results file the
+   experiment's `research:` block names.
+3. Call `research_diff` and tell the person, in two or three plain sentences built only from its plan, what changed.
+   Contradictions first: a claim now contested or contradicted, the paper contradicting itself.
+4. When they ask what supports a claim, or what contradicts the paper, call `research_evidence` (or `explain` for one
+   node) and point them at the picture, the pane (`/research-diff`) or the web page.
+5. For work across the study, `plan_agents` splits it into one agent per paper section or hypothesis; start one
+   subagent per brief. Each agent claims its nodes, writes `by: <name>`, and reads the bus after each tool call.
+6. When they say they have understood it, call `checkpoint`, so the next diff shows only what is new to them.
 
 Never report a result the plan does not show, and never mark a hypothesis supported or refuted without their say.
 """
 SCOPES = ("user", "project", "local")
+EVENTS = {"SessionStart": 10, "UserPromptSubmit": 10, "PostToolUse": 20, "Stop": 30, "SubagentStop": 30}
+EDITS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
+
+
+def _is_repo(cwd: Path) -> bool:
+    try:
+        git("rev-parse", "--git-dir", cwd=cwd)
+        return True
+    except (OSError, subprocess.CalledProcessError):
+        return False
+
+
+def _load(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _save(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(json.dumps(data, indent=2) + "\n")
+
+
+def _split(cmd: str) -> list:
+    return shlex.split(cmd, posix=os.name != "nt")
+
+
+def _claude(args: list) -> subprocess.CompletedProcess:
+    return subprocess.run(["claude", *args], capture_output=True, text=True, timeout=60)
 
 
 def hook_message(root: Path) -> Optional[str]:
     sync_trackers(root)   # runs logged to MLflow or W&B during the turn count too
-    c = compare(root, "checkpoint", ".")
+    c = compare.compare(root, "checkpoint", ".")
     if not c.diff["changes"]:
         return None
     return f"Research diff since {c.base}: {c.diff['headline']} (`research-diff watch` shows the picture.)"
+
+
+def _context(event: str, text: str) -> dict:
+    return {"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}
+
+
+def where_it_stands(root: Path) -> str:
+    g, _bp, _cfg = compare.evidence_of(root)
+    agents.remember(root, g)
+    lines = [f"research-diff: {g['headline']}"]
+    bad = [s for s in g["statements"] if s["verdict"] in ("contradicted", "contested")]
+    for s in bad[:5]:
+        lines.append(f"- {s['id']} is {s['verdict']}: " + "; ".join(x["why"] for x in s["against"][:2]))
+    plan = agents.state(root)["plan"]
+    if plan:
+        lines.append(f"Agents' plan: {plan['task']} ({', '.join(a['name'] for a in plan['agents'])}).")
+    obj = objectives.context(root)
+    return "\n".join(lines + ([obj] if obj else []))
+
+
+def after_change(root: Path, who: str) -> Optional[str]:
+    """Compare the research with how the hooks last saw it; publish what changed; one line when it matters."""
+    bp, cfg, _ = compare.read(root, ".")
+    last = store.read(root, "last.json")
+    if last is None:
+        last, _c, _l = compare.read(root, "turn")
+    store.write(root, "last.json", bp)
+    d = diff(last, bp, cfg)
+    if not d["changes"]:
+        return None
+    g = evidence.build(bp, cfg, agents.owners(root))
+    agents.after_change(root, who, d, g)
+    loud = [c for c in d["changes"] if c["entity"] in ("verdict", "contradiction") and c["op"] != "remove"]
+    if not loud:
+        return None
+    return "Research evidence: " + "; ".join(c["label"] for c in loud[:3]) + \
+        (f" (+{len(loud) - 3} more)" if len(loud) > 3 else "")
+
+
+def on_tool(root: Path, p: dict) -> dict:
+    tool, inp = p.get("tool_name", ""), p.get("tool_input") or {}
+    agent_id = p.get("agent_id") or "main"
+    who = agents.name_of(root, agent_id)
+    path = inp.get("file_path") or inp.get("notebook_path") or ""
+    rel = activity.relative(root, path) if path else ""
+    if tool in EDITS and rel:
+        activity.record(root, "edit", path=rel, agent=who)
+    elif tool == "Read" and rel:
+        activity.record(root, "read", path=rel, agent=who, line=inp.get("offset"))
+    out: dict = {}
+    if tool in EDITS or tool == "Bash" or tool.startswith("mcp__research-diff"):
+        try:
+            if tool == "Bash":
+                sync_trackers(root)
+            said = after_change(root, who)
+            if said:
+                out["systemMessage"] = said
+        except (OSError, subprocess.CalledProcessError, ValueError, KeyError):
+            pass
+    msgs = agents.inbox(root, who)
+    if msgs:
+        out.update(_context("PostToolUse", agents.as_context(msgs)))
+    return out
+
+
+def on_prompt(root: Path, p: dict) -> dict:
+    activity.record(root, "prompt", text=(p.get("prompt") or "")[:2000])
+    try:
+        compare.mark_turn(root)
+        store.write(root, "last.json", compare.read(root, ".")[0])
+    except (OSError, subprocess.CalledProcessError, ValueError):
+        pass
+    objectives.ensure(root)
+    ctx = objectives.context(root)
+    msgs = agents.inbox(root, "main")
+    if msgs:
+        ctx = (ctx + "\n" if ctx else "") + agents.as_context(msgs)
+    return _context("UserPromptSubmit", ctx) if ctx else {}
+
+
+def on_start(root: Path, p: dict) -> dict:
+    if os.environ.get("RESEARCH_DIFF_WEB", "").lower() not in ("off", "0", "no"):
+        from .page import start_web
+        start_web(root)
+    try:
+        return _context("SessionStart", where_it_stands(root))
+    except (OSError, subprocess.CalledProcessError, ValueError, KeyError):
+        return {}
+
+
+def on_stop(root: Path, p: dict, subagent: bool = False) -> dict:
+    from . import history
+    who = agents.name_of(root, p.get("agent_id") or "main") if subagent else "main"
+    out: dict = {}
+    try:
+        msg = hook_message(root) if not subagent else None
+        if msg:
+            out["systemMessage"] = msg
+        c = compare.compare(root, "turn", ".")
+        if c.diff["changes"]:
+            by = sorted(activity.edited_since(root, 0).keys())[-5:] if subagent else []
+            history.record(root, history.entry(c.diff, c.after, "turn", activity.last_request(root),
+                                               by=[who] if subagent else by))
+            if subagent:
+                agents.publish(root, who, "*", f"finished: {c.diff['headline']}", auto=True)
+        g = evidence.build(c.after, c.cfg, agents.owners(root))
+        activity.write_state(root, headline=c.diff["headline"], evidence=g["headline"],
+                             contradictions=sum(1 for e in g["edges"] if e["effective"] in ("-", "?")),
+                             focus=list(activity.focus(root, c.after) or []),
+                             worth=[x["title"] for x in rank.worth_a_look(c.diff, c.after, 2)])
+    except (OSError, subprocess.CalledProcessError, ValueError, KeyError):
+        pass
+    if not subagent:
+        objectives.ensure(root)
+    return out
 
 
 def run_hook(stdin_text: str, emit: Callable[[str], None] = print) -> int:
@@ -61,11 +224,15 @@ def run_hook(stdin_text: str, emit: Callable[[str], None] = print) -> int:
     if not _is_repo(cwd):
         return 0
     try:
-        message = hook_message(Path(git("rev-parse", "--show-toplevel", cwd=cwd).strip()))
+        root = Path(git("rev-parse", "--show-toplevel", cwd=cwd).strip())
+        event = payload.get("hook_event_name") or "Stop"
+        out = {"SessionStart": on_start, "UserPromptSubmit": on_prompt, "PostToolUse": on_tool,
+               "Stop": on_stop}.get(event, lambda r, p: on_stop(r, p, subagent=True) if event == "SubagentStop"
+                                    else {})(root, payload)
     except (OSError, subprocess.CalledProcessError, ValueError, KeyError):
         return 0
-    if message:
-        emit(json.dumps({"systemMessage": message}))
+    if out:
+        emit(json.dumps(out))
     return 0
 
 
@@ -87,21 +254,30 @@ def _ours(entry: dict) -> bool:
     return any(c in h.get("command", "") for h in entry.get("hooks", []) for c in ("research-diff hook", "research_diff hook"))
 
 
-def setup_claude(root: Path, scope: str = "user", undo: bool = False, out: Callable[[str], None] = print) -> int:
+def setup_claude(root: Path, scope: str = "user", undo: bool = False, out: Callable[[str], None] = print,
+                 status_line: bool = True) -> int:
     settings_path, skill_path = _paths(scope, root)
     settings = _load(settings_path)
-    stop = settings.setdefault("hooks", {}).setdefault("Stop", [])
-    ours = [e for e in stop if _ours(e)]
+    hooks = settings.setdefault("hooks", {})
     has_claude = shutil.which("claude") is not None
     if undo:
-        if ours:
-            settings["hooks"]["Stop"] = [e for e in stop if not _ours(e)]
-            if not settings["hooks"]["Stop"]:
-                del settings["hooks"]["Stop"]
-            if not settings["hooks"]:
-                del settings["hooks"]
+        removed = []
+        for ev in list(hooks):
+            kept = [e for e in hooks[ev] if not _ours(e)]
+            if len(kept) != len(hooks[ev]):
+                removed.append(ev)
+            if kept:
+                hooks[ev] = kept
+            else:
+                del hooks[ev]
+        if not hooks:
+            del settings["hooks"]
+        if "research" in json.dumps(settings.get("statusLine", {})):
+            del settings["statusLine"]
+            removed.append("statusLine")
+        if removed:
             _save(settings_path, settings)
-            out(f"removed the Stop hook from {settings_path}")
+            out(f"removed {', '.join(removed)} from {settings_path}")
         if skill_path.is_file() and SKILL_MARK in skill_path.read_text(encoding="utf-8"):
             skill_path.unlink()
             if not any(skill_path.parent.iterdir()):
@@ -111,12 +287,21 @@ def setup_claude(root: Path, scope: str = "user", undo: bool = False, out: Calla
             got = _claude(["mcp", "remove", NAME, "--scope", scope])
             out("removed the MCP server" if got.returncode == 0 else f"could not remove the MCP server: {got.stderr.strip()[:200]}")
         return 0
-    if ours:
-        out(f"the Stop hook is already in {settings_path}")
-    else:
-        stop.append({"hooks": [{"type": "command", "command": f"{command()} hook", "timeout": 30}]})
+    added = []
+    for ev, timeout in EVENTS.items():
+        lst = hooks.setdefault(ev, [])
+        if not any(_ours(e) for e in lst):
+            lst.append({"hooks": [{"type": "command", "command": f"{command()} hook", "timeout": timeout}]})
+            added.append(ev)
+    if status_line and "statusLine" not in settings:
+        settings["statusLine"] = {"type": "command", "command": f"{command()} statusline"}
+        added.append("statusLine")
+    if added:
         _save(settings_path, settings)
-        out(f"added a Stop hook to {settings_path}: after each turn, one line on what changed in the research")
+        out(f"added {', '.join(added)} to {settings_path}: one line on what changed in the research and its evidence, "
+            "the agents' messages, the status line")
+    else:
+        out(f"the hooks are already in {settings_path}")
     if skill_path.is_file() and SKILL_MARK not in skill_path.read_text(encoding="utf-8"):
         out(f"left {skill_path} alone: someone else wrote it")
     elif not (skill_path.is_file() and skill_path.read_text(encoding="utf-8") == SKILL):

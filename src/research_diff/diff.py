@@ -2,18 +2,22 @@
 or broken, and warnings that appeared or went away. One sentence (headline) and the exact list (plan)."""
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Any, Dict, List, Optional
 
 PLURAL = {"question": "questions", "hypothesis": "hypotheses", "experiment": "experiments", "result": "results",
-          "claim": "claims", "note": "notes"}
+          "claim": "claims", "finding": "findings", "note": "notes"}
 
 
 def _num(x: float) -> str:
     return f"{x:.4g}"
 
 
-def diff(a: dict, b: dict) -> dict:
+def diff(a: dict, b: dict, cfg: Optional[Dict[str, Any]] = None) -> dict:
+    """With the config, the evidence too: statements whose verdict moved, contradictions that appeared or went."""
     changes: List[dict] = []
+    if cfg is not None:
+        from . import evidence
+        changes += evidence.changes(evidence.build(a, cfg), evidence.build(b, cfg))
 
     def add(op, entity, key, label="", detail=(), impact=()):
         changes.append({"op": op, "entity": entity, "id": key, "label": label or key, "detail": list(detail),
@@ -59,6 +63,14 @@ def diff(a: dict, b: dict) -> dict:
 def headline(changes: List[dict]) -> str:
     """One sentence: what the iteration did to the research."""
     parts: List[str] = []
+    new_c = [c for c in changes if c["entity"] == "contradiction" and c["op"] == "add"]
+    if new_c:
+        parts.append(f"{len(new_c)} new contradiction{'' if len(new_c) == 1 else 's'} ({new_c[0]['label']}"
+                     + (f" +{len(new_c) - 1} more" if len(new_c) > 1 else "") + ")")
+    parts += [c["label"] for c in changes if c["entity"] == "verdict"]
+    gone_c = sum(1 for c in changes if c["entity"] == "contradiction" and c["op"] == "remove")
+    if gone_c:
+        parts.append(f"{gone_c} contradiction{'' if gone_c == 1 else 's'} resolved")
     for op, verb in (("add", "adds"), ("remove", "drops")):
         groups: Dict[str, List[str]] = {}
         for c in changes:
