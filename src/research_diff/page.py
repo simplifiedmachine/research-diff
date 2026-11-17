@@ -414,7 +414,9 @@ def show(root: Path, view: str = "now", part: str = "", width: int = 100, base: 
      "agents": view_agents,
      "history": view_history}[p.view](L, p)
     data = p.data()
-    data["web"] = web_url(root)
+    from . import host
+    data["merged"] = host.merged()                # its tabs are in system-diff's pane and page
+    data["web"] = host.system_web(root) if data["merged"] else web_url(root)
     data["research"] = bool(L["map"]["nodes"])    # the pane opens by itself only where there is research
     data["send"] = take_outbox(root) if deliver else []
     if deliver:
@@ -490,6 +492,9 @@ def start_web(root: Path) -> None:
     import sys
     import time as _time
     if os.environ.get("PYTEST_CURRENT_TEST") and not os.environ.get("RESEARCH_DIFF_WEB_IN_TESTS"):
+        return
+    from . import host
+    if host.merged():                 # system-diff's engine serves research-diff's tabs: no server of its own
         return
     if os.environ.get("RESEARCH_DIFF_WEB", "").lower() in ("off", "0", "no") or web_url(root):
         return

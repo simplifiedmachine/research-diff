@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "research-diff"
-version = "0.4.1"
+version = "0.5.0"
 description = "Maps your research from its notes, experiment configs, results and paper, draws which evidence supports and which contradicts each claim of the paper, and shows what each iteration (and each agent) changed. Built for doing research with AI coding agents."
 readme = "README.md"
 license = "MIT"
@@ -19,7 +19,7 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 # Its pictures, snapshots and live page are system-diff's (same author, no dependencies of its own), pinned.
-dependencies = ["system-diff==0.8.0"]
+dependencies = ["system-diff>=0.8.0"]
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.10"]
@@ -28,6 +28,10 @@ dev = ["pytest>=8", "mcp>=1.10"]
 [project.urls]
 Homepage = "https://github.com/simplifiedmachine/research-diff"
 Documentation = "https://github.com/simplifiedmachine/research-diff/wiki"
+
+# Inside system-diff's engine, page and pane when a system-diff with extensions is installed (system_diff_ext.py)
+[project.entry-points."system_diff.extensions"]
+research = "research_diff.system_diff_ext"
 
 [project.scripts]
 research-diff = "research_diff.cli:main"

@@ -252,6 +252,7 @@ def start(root: Path, goal: str, target: str = "", max_iterations: int = 5, serv
         c["ask"] = "plan"                 # Claude plans the first iteration
     _save(root, c)
     ensure_runner(root)
+    handoff(root)
     return c
 
 
@@ -447,6 +448,16 @@ def tick(root: Path) -> dict:
     return c
 
 
+def handoff(root: Path) -> bool:
+    """Merged into system-diff: hand a waiting ask to the session through system-diff's pane, once."""
+    from . import host
+    ask = untold(root)
+    if not ask or not host.merged() or not host.deliver(root, ask):
+        return False
+    told(root)
+    return True
+
+
 def pending(root: Path) -> Optional[str]:
     """What the session should do now, as a prompt; None when nothing waits for Claude."""
     c = campaign(root)
@@ -556,6 +567,7 @@ def run_forever(root: Path, every: float = TICK) -> None:
     while not stop["now"]:
         _write(root, "runner.json", {"pid": os.getpid(), "beat": time.time()})
         c = tick(root)
+        handoff(root)
         if not c or c.get("state") in ("stopped", "done"):
             break
         time.sleep(every)
@@ -589,3 +601,39 @@ def as_text(root: Path) -> str:
     if c.get("summary"):
         out.append(f"\n  {c['summary']}")
     return "\n".join(out)
+
+
+# ── the web page's controls (research-diff's own page, and system-diff's under /x/research/auto) ───────────────────
+
+def web_status(root: Path, config_path: Optional[str] = None) -> dict:
+    from . import compare
+    st = status(root)
+    bp = compare.read(root, ".", config_path)[0]
+    c = st["campaign"]
+    it = c["iterations"][-1] if c.get("iterations") else {}
+    return {**st, "pending_told": bool(it.get("told") or c.get("ask_told")),
+            "experiments": [{"id": k, "title": n["title"], "run": n.get("run", "")} for k, n in bp["nodes"].items()
+                            if n["kind"] == "experiment"]}
+
+
+def web_action(root: Path, action: str, d: dict) -> dict:
+    """server | server/remove | server/check | start | control, with the page's form as `d`."""
+    if action == "server":
+        gpus = d.get("gpus", [])
+        gpus = [int(g) for g in (gpus.split(",") if isinstance(gpus, str) else gpus) if str(g).strip()]
+        return save_server(root, str(d.get("name", "")), str(d.get("host", "")), str(d.get("workdir", "")), gpus,
+                           str(d.get("setup", "")), int(d.get("port") or 0))
+    if action == "server/remove":
+        return {"removed": remove_server(root, str(d.get("name", "")))}
+    if action == "server/check":
+        s = next((x for x in servers(root) if x["name"] == d.get("name")), None)
+        if s is None:
+            raise ValueError("no such server")
+        return check_server(root, s)
+    if action == "start":
+        c = start(root, str(d.get("goal", "")), str(d.get("target", "")), int(d.get("max_iterations") or 5),
+                  list(d.get("servers") or []) or None, list(d.get("experiments") or []) or None)
+        return {"state": c["state"]}
+    if action == "control":
+        return {"state": control(root, str(d.get("action", "")))["state"]}
+    raise ValueError("unknown action")

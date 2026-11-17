@@ -15,7 +15,7 @@ import type { Act, Page, Row } from '../types'
 // green what is supported or new, white what to read, gray the background, red what contradicts.
 
 const PANE = 'research-diff'
-const VERSION = '0.4.1' // the plugin's own, as .claude-plugin/plugin.json says (a test keeps them one)
+const VERSION = '0.5.0' // the plugin's own, as .claude-plugin/plugin.json says (a test keeps them one)
 const WIDEST = 999 // as wide as Claude Code docks a pane: 45% of the terminal
 const COMMANDS = ['research-diff'] as const
 const VIEWS = [['now', 'Now', 'n'], ['review', 'Review', 'r'], ['evidence', 'Evidence', 'e'], ['paper', 'Paper', 'p'],
@@ -25,6 +25,11 @@ const VIEWS = [['now', 'Now', 'n'], ['review', 'Review', 'r'], ['evidence', 'Evi
 const OTHER = 'system-diff'
 const STARTED = Date.now()
 let autoOpen = false // the session started: open once the first page shows there is research here
+// research-diff runs inside system-diff's engine (a system-diff with extensions is installed): its tabs are in the
+// System diff pane (s Research, e Evidence, p Paper, u Auto-research), so this pane steps aside and looks no more
+let merged = false
+const MERGED_NOTE = "research-diff's tabs are in the System diff pane: s Research · e Evidence · p Paper · " +
+  'u Auto-research (/system-diff opens it).'
 
 const page = atom({ plugin: 'research-diff', key: 'page' } as const, null as Page | null, { shape: 'page-2' })
 const view = atom({ plugin: 'research-diff', key: 'view' } as const, 'now', { shape: 'view-1' })
@@ -208,6 +213,12 @@ async function apply($: EngineInterface, out: string, data: Page, key: string): 
     return true
   }
   noted = false
+  if ((data as Page & { merged?: boolean }).merged) {
+    merged = true
+    autoOpen = false
+    try { await $.ui.close({ id: PANE }) } catch { /* not open */ }
+    return false
+  }
   if (!(data.rows?.length)) return false
   if (autoOpen && (data as Page & { research?: boolean }).research) {
     autoOpen = false
@@ -346,6 +357,7 @@ async function longPoll($: EngineInterface): Promise<void> {
 // failure, or a long poll still waiting on what the person has moved away from). What the session refused to take is
 // offered again.
 async function tick($: EngineInterface): Promise<void> {
+  if (merged) return // system-diff's pane shows research-diff's tabs
   deliver($, [])
   const current = (await asking($)).key
   if (!pollLive || pollOld || (pollKey !== '' && pollKey !== current)) await refresh($)
@@ -541,6 +553,7 @@ export const register: Register = on => {
       }
       if (e.args.trim().toLowerCase() === 'tui') return { text: await terminal($) }
       await refresh($)
+      if (merged) return { text: MERGED_NOTE }
       await open($, true)
       return { text: 'Research diff pane opened (in place of the System diff pane, if it was open).' }
     })

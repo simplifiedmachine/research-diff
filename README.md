@@ -131,6 +131,52 @@ no experiment, and when a link points at nothing.
    Or without the pane: `research-diff setup claude` (hooks, status line, a skill and the MCP server; `--undo`).
 3. Restart Claude Code. The pane opens beside the chat; `/research-diff` opens it again.
 
+<details><summary>Upgrading, and Windows</summary>
+
+```sh
+python -m pip install -U "research-diff[mcp]"     # or: pipx upgrade research-diff
+```
+
+Then update the plugin (`/plugin`, research-diff, update) and restart Claude Code.
+
+On Windows, use `python -m pip` (as above), and quit Claude Code first: its MCP server, the web page and the
+auto-research runner keep `research-diff.exe` open, and Windows cannot replace a file in use ("WinError 32 … being
+used by another process"). If an upgrade failed that way, stop what still runs it and clear what the failed attempt
+left behind (the `Ignoring invalid distribution ~esearch-diff` warnings), then upgrade again:
+
+```powershell
+Get-Process research-diff -ErrorAction SilentlyContinue | Stop-Process -Force
+$sp = python -c "import sysconfig; print(sysconfig.get_paths()['purelib'])"
+Remove-Item "$sp\~esearch-diff*", "$sp\~ystem-diff*" -Recurse -Force -ErrorAction SilentlyContinue
+python -m pip install -U "research-diff[mcp]"
+```
+</details>
+
+## With system-diff: one engine, one page, one pane
+
+Installed beside a system-diff with extensions (0.10 and later), research-diff runs **inside system-diff's own
+engine**, as its extension: one port, one web page and one pane in Claude Code, with system-diff's caching and
+diagrams. Its tabs sit after system-diff's own:
+
+| Tab | Key | What |
+|---|---|---|
+| Research | `s` | what changed in the research since your checkpoint, on the research map, and what is worth a look |
+| Evidence | `e` | the evidence graph as system-diff's diagram (green supports, red contradicts; Enter or a click zooms into a claim's evidence chain), the statements worst first, the interactive graph below |
+| Paper | `p` | the paper section by section, numbers checked, summaries and the review; each paper file opened beside its outline |
+| Auto-research | `u` | servers, the campaign, its iterations and their logs |
+
+The research is read from the files system-diff's engine already holds in memory, once per version of the working
+tree, so the tabs answer in milliseconds. research-diff then starts no web server and no pane of its own (`/research-diff`
+says where its tabs are), and what auto-research asks of Claude goes through system-diff's pane.
+`RESEARCH_DIFF_STANDALONE=1` keeps research-diff on its own, with its own page and pane, as without system-diff.
+
+Until system-diff 0.10.0 is on PyPI, install it from its main branch for this:
+
+```sh
+python -m pip install -U "system-diff[mcp] @ git+https://github.com/simplifiedmachine/system-diff@main"
+python -m pip install -U "research-diff[mcp] @ git+https://github.com/simplifiedmachine/research-diff@main"
+```
+
 ## In Claude Code
 
 - **The pane**: `n` Now · `r` Review · `e` Evidence · `p` Paper · `u` Auto-research · `a` Agents · `h` History. Arrows pick a claim (its

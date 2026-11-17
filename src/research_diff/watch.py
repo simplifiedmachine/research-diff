@@ -29,6 +29,7 @@ from urllib.parse import parse_qs, urlparse
 from system_diff.compare import worktree_tree
 
 from . import __version__, chat, compare, evgraph, graph, hub, page, paperview, store
+from .webparts import file_html
 
 IDLE = 8 * 3600           # an engine with no look and no change for this long stops (the pane starts it again)
 TABS = [("now", "Now"), ("review", "Review"), ("evidence", "Evidence"), ("paper", "Paper"), ("auto", "Auto-research"),
@@ -53,45 +54,6 @@ def rows_html(data: dict) -> str:
         cls = ' class="pick"' if attr else ""
         out.append(f"<div{cls}{attr}>{''.join(spans) or '&nbsp;'}</div>")
     return "\n".join(out)
-
-
-def file_html(o: dict, state: dict) -> str:
-    """One research file: its outline (with the LLM's summary of each section, ✦) beside its text, the lines a number
-    check found stale in red, the markers' lines lit."""
-    if o.get("error"):
-        return f"<p>{escape(o['error'])}</p>"
-    s = o.get("summary") or {}
-    bad = {n["line"]: n["why"] for c in o["chunks"] for n in c["numbers"] if n["sign"] == "-"}
-    good = {n["line"] for c in o["chunks"] for n in c["numbers"] if n["sign"] == "+"}
-    marked = {st["line"] for c in o["chunks"] for st in c["statements"]} | \
-        {f["line"] for c in o["chunks"] for f in c["floats"]}
-    say = {"done": "", "summarizing": "✦ Your LLM is summarising each section…", "off": "✦ " + state.get("why", ""),
-           "failed": "✦ No summary: " + state.get("why", "")}.get(state.get("state", ""), "")
-    left = [f"<h2>{escape(o['path'])}</h2>",
-            f'<p class="sum">✦ {escape(s["file"])}</p>' if s.get("file") else f'<p class="muted">{escape(say)}</p>']
-    for c in o["chunks"]:
-        cs = (s.get("sections") or {}).get(c["title"], {})
-        left.append(f'<div class="chunk" data-line="{c["line"]}"><b>{"&nbsp;" * 2 * (c["level"] - 1)}§ '
-                    f'{escape(c["title"])}</b> <span class="muted">{c["line"]}–{c["end"]}</span>')
-        for k in ("says", "claims", "watch"):
-            if cs.get(k):
-                left.append(f'<div class="{"watch" if k == "watch" else "sum"}">✦ {k}: {escape(cs[k])}</div>')
-        for st in c["statements"]:
-            left.append(f'<div class="st v-{st["verdict"] or "unsupported"}" data-line="{st["line"]}">'
-                        f'<b>{escape(st["id"])}</b> {escape(st["title"][:90])} <i>{escape(st["verdict"])}</i></div>')
-        for f in c["floats"]:
-            left.append(f'<div class="st v-{f["verdict"] or "holds"}" data-line="{f["line"]}"><b>{escape(f["label"])}'
-                        f'</b> {escape(f["caption"][:90])}</div>')
-        for n in c["numbers"]:
-            if n["sign"] == "-":
-                left.append(f'<div class="bad" data-line="{n["line"]}">✗ {escape(n["why"])}</div>')
-        left.append("</div>")
-    right = []
-    for i, line in enumerate(o["lines"], 1):
-        cls = "bad" if i in bad else "mark" if i in marked else "ok" if i in good else ""
-        tip = f' title="{escape(bad[i])}"' if i in bad else ""
-        right.append(f'<div id="L{i}" class="ln {cls}"{tip}><span class="n">{i}</span>{escape(line) or " "}</div>')
-    return f'<div class="file"><div class="outline">{"".join(left)}</div><div class="src">{"".join(right)}</div></div>'
 
 
 PAGE = """<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width">
@@ -179,8 +141,9 @@ async function load() {
     return;
   }
   rows.style.whiteSpace = '';
-  if (view === 'auto' && !part) { frame.innerHTML = ''; pic.innerHTML = ''; rows.style.whiteSpace = 'normal';
-    await autoView(rows); return; }
+  if (view === 'auto' && !part) { rows.innerHTML = ''; pic.innerHTML = '';
+    if (!frame.firstChild || !frame.firstChild.src.endsWith('/auto/page')) frame.innerHTML = '<iframe src="/auto/page"></iframe>';
+    return; }
   if (view === 'evidence' && !part) {
     rows.innerHTML = ''; pic.innerHTML = '';
     if (!frame.firstChild) frame.innerHTML = '<iframe src="/evidence"></iframe>'; else frame.firstChild.contentWindow.location.reload();
@@ -205,81 +168,6 @@ async function side() {
 }
 function href(port){const m=location.hostname.match(/^(.*-)(\\d+)(\\..+)$/);
   if(!location.port&&m)return location.protocol+"//"+m[1]+port+m[3]+"/";return location.protocol+"//"+location.hostname+":"+port+"/";}
-async function post(path, body) {
-  const r = await fetch(path, {method: 'POST', headers: {'x-token': TOKEN, 'content-type': 'application/json'},
-    body: JSON.stringify(body || {})});
-  const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || r.status); return d;
-}
-let stopArmed = false, checks = {};
-async function autoView(el) {
-  const d = await (await fetch('/auto')).json(), c = d.campaign || {}, on = ['running', 'paused', 'stopping'].includes(c.state);
-  const srv = d.servers.map(s => `<tr><td><b>${esc(s.name)}</b></td><td>${esc(s.host)}</td><td>${esc(s.workdir || '(the repository)')}</td>
-    <td>${s.gpus.length ? 'GPU ' + s.gpus.join(',') : 'CPU'}</td><td>${esc(s.setup || '')}</td>
-    <td><button data-check="${esc(s.name)}">Check</button> <button data-rm="${esc(s.name)}">Remove</button>
-    <div>${checks[s.name] || ''}</div></td></tr>`).join('');
-  const exps = d.experiments.map(x => `<label><input type="checkbox" name="exp" value="${esc(x.id)}" ${x.run ? '' : 'disabled'}>
-    ${esc(x.id)} ${esc(x.title)}${x.run ? '' : ' (no run:)'}</label>`).join(' ');
-  let html = `<div class="ar"><div class="card"><h3>Servers</h3><div class="tbl"><table class="jobs"><tr><th>Name</th><th>Host</th>
-    <th>Working directory</th><th>GPUs</th><th>Setup</th><th></th></tr>${srv || '<tr><td colspan="6" class="muted">None yet: add this machine (host: local) or an SSH host your keys reach.</td></tr>'}</table></div>
-    <form id="addsrv" class="grid" style="margin-top:8px"><label>Name<input id="s_name" required placeholder="lab-gpu"></label>
-    <label>Host<input id="s_host" required placeholder="local or user@host"></label><label>Port<input id="s_port" size="4" placeholder="22"></label>
-    <label>Working directory<input id="s_dir" placeholder="~/runs"></label><label>GPUs<input id="s_gpus" size="8" placeholder="0,1,2,3"></label>
-    <label>Setup<input id="s_setup" placeholder="source ~/venv/bin/activate"></label><button>Add server</button></form>
-    <div class="muted">No password is asked or kept: an SSH host must already let your keys in (ssh -o BatchMode=yes).</div></div>`;
-  if (!on) {
-    html += `<div class="card"><h3>Start auto-research</h3>${c.state ? `<p class="muted">Last: <span class="badge s-${c.state}">${c.state}</span> ${esc(c.goal)}${c.summary ? ' — ' + esc(c.summary) : ''}</p>` : ''}
-      <form id="start" class="grid"><label style="flex:1 1 100%">Goal<textarea id="a_goal" rows="2" required placeholder="Find out whether the gap closes with the learning rate scaled, and make the paper say so"></textarea></label>
-      <label>Target (optional)<input id="a_target" size="34" placeholder="E2.results acc.batch512 > 0.88"></label>
-      <label>Iterations<input id="a_max" type="number" min="1" value="5" style="width:5em"></label>
-      <div style="flex:1 1 100%" class="muted">Servers: ${d.servers.map(s => `<label><input type="checkbox" name="srv" value="${esc(s.name)}" checked> ${esc(s.name)}</label>`).join(' ') || 'add one first'}</div>
-      <div style="flex:1 1 100%" class="muted">First iteration (none ticked: Claude plans it): ${exps || 'no experiment yet'}</div>
-      <button>Start</button></form><div class="err" id="a_err"></div></div>`;
-  } else {
-    html += `<div class="card"><h3><span class="badge s-${c.state}">${c.state}</span> ${esc(c.goal)}</h3>
-      <div class="muted">target ${esc(c.target || 'none')} · iteration ${c.iterations.length} of ${c.max_iterations} · servers ${esc(c.servers.join(', '))} · runner ${d.runner ? 'on' : 'off (it starts by itself)'}</div>
-      <div class="grid" style="margin-top:8px">${c.state === 'running' ? '<button data-ctl="pause">Pause</button>' : ''}
-      ${c.state === 'paused' ? '<button data-ctl="resume">Resume</button>' : ''}
-      <button data-ctl="stop" id="stopbtn">${stopArmed ? 'Confirm: stop and kill the running jobs' : 'Stop'}</button></div>
-      ${d.pending ? `<p class="muted" style="margin-bottom:2px">Waiting for Claude${d.pending_told ? ' (handed to the session)' : ''}:</p><div class="ask">${esc(d.pending)}</div>` : ''}
-      <div class="err" id="a_err"></div></div>`;
-  }
-  for (const it of (c.iterations || []).slice().reverse()) {
-    const jobs = it.jobs.map(k => c.jobs[k]).map(j => `<tr><td>${j.id}</td><td><a href="#" data-zoom="${esc(j.experiment)}">${esc(j.experiment)}</a></td>
-      <td class="s-${j.state}">${j.state}</td><td>${esc(j.server || '')}${j.gpus.length ? ' · GPU ' + j.gpus.join(',') : ''}</td>
-      <td>${j.started ? Math.round(((j.ended || Date.now() / 1000) - j.started) / 60) + ' min' : ''}</td><td>${esc(j.why || '')}</td></tr>
-      ${j.tail && (j.state === 'running' || j.state === 'failed') ? `<tr><td colspan="6"><pre class="tail">${esc(j.tail)}</pre></td></tr>` : ''}`).join('');
-    html += `<div class="card"><h3>Iteration ${it.n} <span class="badge s-${it.state === 'analyse' ? 'paused' : it.state === 'running' ? 'running' : 'stopped'}">${it.state}</span></h3>
-      ${it.reason ? `<div><b>Why:</b> ${esc(it.reason)}</div>` : ''}${it.analysis ? `<div><b>Claude's analysis:</b> ${esc(it.analysis)}</div>` : ''}
-      <div class="tbl"><table class="jobs"><tr><th>Job</th><th>Experiment</th><th>State</th><th>Where</th><th>Time</th><th></th></tr>${jobs}</table></div></div>`;
-  }
-  if (c.events && c.events.length) html += `<div class="card"><h3>What happened</h3>${c.events.slice(-12).reverse().map(e =>
-    `<div class="muted">${new Date(e.at * 1000).toLocaleTimeString()} · ${esc(e.text)}</div>`).join('')}</div>`;
-  el.innerHTML = html + '</div>'; wire(el);
-  const err = m => { const x = document.getElementById('a_err'); if (x) x.textContent = m; };
-  const add = document.getElementById('addsrv');
-  add.onsubmit = async e => { e.preventDefault(); const v = id => document.getElementById(id).value;
-    try { await post('/auto/server', {name: v('s_name'), host: v('s_host'), port: v('s_port'), workdir: v('s_dir'),
-      gpus: v('s_gpus'), setup: v('s_setup')}); await autoView(el); } catch (x) { alert_(x); } };
-  const alert_ = x => { const b = document.createElement('div'); b.className = 'err'; b.textContent = String(x.message || x); add.after(b); };
-  for (const b of el.querySelectorAll('[data-rm]')) b.onclick = async () => { await post('/auto/server/remove', {name: b.dataset.rm}); autoView(el); };
-  for (const b of el.querySelectorAll('[data-check]')) b.onclick = async () => { b.textContent = 'Checking…';
-    const r = await post('/auto/server/check', {name: b.dataset.check});
-    checks[b.dataset.check] = r.ok ? `<span class="s-running">reachable</span>${r.gpus.length ? ' · ' + r.gpus.map(g => `GPU ${g.index} ${esc(g.name)} (${g.used}/${g.total} MiB)`).join(', ') +
-      ` <button data-use="${esc(b.dataset.check)}" data-g="${r.gpus.map(g => g.index).join(',')}">Use these GPUs</button>` : ' · no GPU found (CPU jobs)'}`
-      : `<span class="err">${esc(r.why)}</span>`;
-    autoView(el); };
-  for (const b of el.querySelectorAll('[data-use]')) b.onclick = async () => { const s = d.servers.find(x => x.name === b.dataset.use);
-    await post('/auto/server', {...s, gpus: b.dataset.g}); delete checks[s.name]; autoView(el); };
-  const st = document.getElementById('start');
-  if (st) st.onsubmit = async e => { e.preventDefault();
-    try { await post('/auto/start', {goal: document.getElementById('a_goal').value, target: document.getElementById('a_target').value,
-      max_iterations: +document.getElementById('a_max').value, servers: [...el.querySelectorAll('[name=srv]:checked')].map(x => x.value),
-      experiments: [...el.querySelectorAll('[name=exp]:checked')].map(x => x.value)}); autoView(el); } catch (x) { err(x.message); } };
-  for (const b of el.querySelectorAll('[data-ctl]')) b.onclick = async () => {
-    if (b.dataset.ctl === 'stop' && !stopArmed) { stopArmed = true; return autoView(el); }
-    stopArmed = false; try { await post('/auto/control', {action: b.dataset.ctl}); } catch (x) { err(x.message); } autoView(el); };
-}
-setInterval(() => { if (view === 'auto' && !part && !file && !document.hidden && !document.activeElement.closest('form')) load(); }, 4000);
 document.getElementById('back').onclick = () => { [view, part, file] = trail.pop(); load(); };
 document.getElementById('mark').onclick = async () => { await fetch('/mark', {method: 'POST', headers: {'x-token': TOKEN}}); };
 document.getElementById('send').onsubmit = async e => { e.preventDefault(); const t = document.getElementById('say');
@@ -377,37 +265,12 @@ class Watcher:
         return evgraph.standalone(g)
 
     def auto(self) -> dict:
-        from . import autoresearch as ar
-        st = ar.status(self.root)
-        bp = compare.read(self.root, ".", self.config_path)[0]
-        c = st["campaign"]
-        it = c["iterations"][-1] if c.get("iterations") else {}
-        return {**st, "pending_told": bool(it.get("told") or c.get("ask_told")),
-                "experiments": [{"id": k, "title": n["title"], "run": n.get("run", "")} for k, n in bp["nodes"].items()
-                                if n["kind"] == "experiment"]}
+        from . import autoresearch
+        return autoresearch.web_status(self.root, self.config_path)
 
     def auto_post(self, path: str, d: dict) -> dict:
-        """The Auto-research tab's buttons: a server added, checked or removed; start; pause, resume or stop."""
-        from . import autoresearch as ar
-        if path == "/auto/server":
-            gpus = d.get("gpus", [])
-            gpus = [int(g) for g in (gpus.split(",") if isinstance(gpus, str) else gpus) if str(g).strip()]
-            return ar.save_server(self.root, str(d.get("name", "")), str(d.get("host", "")), str(d.get("workdir", "")),
-                                  gpus, str(d.get("setup", "")), int(d.get("port") or 0))
-        if path == "/auto/server/remove":
-            return {"removed": ar.remove_server(self.root, str(d.get("name", "")))}
-        if path == "/auto/server/check":
-            s = next((x for x in ar.servers(self.root) if x["name"] == d.get("name")), None)
-            if s is None:
-                raise ValueError("no such server")
-            return ar.check_server(self.root, s)
-        if path == "/auto/start":
-            c = ar.start(self.root, str(d.get("goal", "")), str(d.get("target", "")), int(d.get("max_iterations") or 5),
-                         list(d.get("servers") or []) or None, list(d.get("experiments") or []) or None)
-            return {"state": c["state"]}
-        if path == "/auto/control":
-            return {"state": ar.control(self.root, str(d.get("action", "")))["state"]}
-        raise ValueError("unknown action")
+        from . import autoresearch
+        return autoresearch.web_action(self.root, path[len("/auto/"):], d)
 
     def talk(self) -> dict:
         return {"answers": chat.answers(self.root, 5), "pointing": chat.pointing(self.root)}
@@ -451,8 +314,11 @@ def handler(w: Watcher):
                     return self._send(200, json.dumps(got).encode())
                 if u.path == "/file":
                     return self._send(200, json.dumps(w.file(q.get("path", [""])[0])).encode())
-                if u.path == "/auto":
+                if u.path in ("/auto", "/auto/status"):
                     return self._send(200, json.dumps(w.auto()).encode())
+                if u.path == "/auto/page":
+                    from . import webparts
+                    return self._send(200, webparts.auto_page("/auto", w.token).encode(), "text/html; charset=utf-8")
                 if u.path == "/talk":
                     return self._send(200, json.dumps(w.talk()).encode())
                 if u.path == "/evidence":
