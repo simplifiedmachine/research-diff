@@ -30,6 +30,7 @@ from system_diff.compare import worktree_tree
 
 from . import __version__, chat, compare, evgraph, graph, hub, page, paperview, store
 
+IDLE = 8 * 3600           # an engine with no look and no change for this long stops (the pane starts it again)
 TABS = [("now", "Now"), ("review", "Review"), ("evidence", "Evidence"), ("paper", "Paper"), ("auto", "Auto-research"),
         ("agents", "Agents"), ("history", "History")]
 COLORS = {"accent": "var(--blue)", "good": "var(--green)", "attention": "var(--amber)", "removed": "var(--red)",
@@ -303,6 +304,8 @@ class Watcher:
         self.version, self.at, self.error, self.last_key = 0, "", "", None
         self.stop = threading.Event()
         self.lock = threading.Lock()
+        self.seen = time.time()          # the last request or change: an engine nobody uses goes away
+        self.server = None
 
     def key(self) -> tuple:
         h = store.home(self.root)
@@ -329,9 +332,26 @@ class Watcher:
     def loop(self) -> None:
         from . import autoresearch
         while not self.stop.is_set():
+            before = self.version
             self.tick()
+            if self.version != before:
+                self.seen = time.time()
             autoresearch.ensure_runner(self.root)     # the engine keeps the runner going while it is on
+            if self.gone():
+                self.stop.set()
+                if self.server is not None:
+                    threading.Thread(target=self.server.shutdown, daemon=True).start()
+                return
             self.stop.wait(self.interval)
+
+    def gone(self) -> bool:
+        """Time to go: the repository is gone, another engine serves it now, or nothing happened for IDLE seconds."""
+        if not (self.root / ".git").exists():
+            return True
+        mine = (store.read(self.root, "web.json", {}) or {}).get("id")
+        if mine and mine != self.ident:
+            return True
+        return time.time() - self.seen > IDLE
 
     def view(self, v: str, part: str) -> dict:
         data = page.show(self.root, v, part, 160, self.base, self.config_path)
@@ -408,6 +428,8 @@ def handler(w: Watcher):
 
         def do_GET(self):
             u = urlparse(self.path)
+            if u.path != "/whoami":
+                w.seen = time.time()
             q = parse_qs(u.query)
             try:
                 if u.path in ("/", "/index.html"):
@@ -484,11 +506,15 @@ def serve(root: Path, base_point: str = "checkpoint", port: int = 0, config_path
             break
         except OSError:
             continue
+    w.server = server
     port = server.server_address[1]
-    url = f"http://127.0.0.1:{port}/"
+    url = f"http://localhost:{port}/"
     store.write(root, "web.json", {"port": port, "pid": os.getpid(), "id": w.ident})
     entry = hub.register(root, url, port, w.ident, __version__)
     threading.Thread(target=w.loop, daemon=True).start()
+    if threading.current_thread() is threading.main_thread():   # `kill`: stop as Ctrl-C does, leaving no entry
+        import signal
+        signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=server.shutdown, daemon=True).start())
     if ready:
         ready(url, server, w)
     elif not quiet:

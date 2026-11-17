@@ -165,3 +165,30 @@ def test_history_compares_any_two_points(study, capsys):
     assert "2 claims" in out or "C2" in out
     assert main(["--repo", str(study), "outline", "paper/main.tex"]) == 0
     assert "✗ line 22" in capsys.readouterr().out
+
+
+def test_numbers_match_at_the_coarser_precision_and_no_check_silences_a_paragraph(study, files):
+    from research_diff.paper import compare_number
+    n = lambda v, d, pct=False: {"value": v, "decimals": d, "pct": pct, "raw": str(v), "line": 1}  # noqa: E731
+    assert compare_number(n(58.7, 1), [("R4", "rho", 0.59)], 0.02)[0] == "match"      # 0.59 kept with 2 decimals
+    assert compare_number(n(72.6, 1), [("R12", "rb2", 72.5)], 0.02)[0] == "stale"
+    assert compare_number(n(87.9, 1, True), [("E1", "acc", 0.874)], 0.02)[0] == "stale"
+    files(study, {"paper/main.tex": PAPER.replace("\\begin{abstract}\n", "\\begin{abstract}\n% research-diff: no-check\n")})
+    assert compare.read(study, ".")[0]["issues"] == []
+
+
+def test_the_page_address_is_only_this_repositorys_engine(study, tmp_path):
+    from research_diff import page, store
+    store.write(study, "web.json", {"port": 1, "id": "abc"})            # nothing answers there
+    assert page.web_url(study) == ""
+    page.start_web(study)                                               # never from tests: it would outlive them
+    assert not (store.home(study) / "web.starting").exists()
+
+
+def test_an_engine_goes_when_its_repository_does(study):
+    import shutil
+    from research_diff import watch
+    w = watch.Watcher(study, "checkpoint", None, 1)
+    assert not w.gone()
+    shutil.rmtree(study / ".git")
+    assert w.gone()

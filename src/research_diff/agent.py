@@ -183,9 +183,8 @@ def on_prompt(root: Path, p: dict) -> dict:
 
 
 def on_start(root: Path, p: dict) -> dict:
-    if os.environ.get("RESEARCH_DIFF_WEB", "").lower() not in ("off", "0", "no"):
-        from .page import start_web
-        start_web(root)
+    from .page import start_web
+    start_web(root)
     from . import autoresearch
     autoresearch.ensure_runner(root)          # jobs went on while the session was away: follow them again
     try:

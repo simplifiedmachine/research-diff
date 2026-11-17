@@ -18,7 +18,6 @@ Styles are words: accent (blue: where Claude is, what you picked), attention (ye
 """
 from __future__ import annotations
 
-import socket
 import subprocess
 import time
 from pathlib import Path
@@ -421,6 +420,8 @@ def show(root: Path, view: str = "now", part: str = "", width: int = 100, base: 
     if deliver:
         from . import autoresearch
         autoresearch.ensure_runner(root)      # the pane is open: the session is here, the runner should be too
+        if not data["web"]:
+            start_web(root)                   # and the web page: the pane shows its address once it answers
         ask = autoresearch.untold(root)
         if ask:
             c = autoresearch.campaign(root)
@@ -446,15 +447,24 @@ def take_outbox(root: Path) -> List[dict]:
 
 
 def web_url(root: Path) -> str:
+    """This repository's web page, when its server answers as itself (GET /whoami gives web.json's id: not another
+    program, or another repository's engine, that took the port since)."""
+    import http.client
+    import json as _json
     w = store.read(root, "web.json", {}) or {}
     port = w.get("port")
     if not port:
         return ""
+    conn = http.client.HTTPConnection("127.0.0.1", int(port), timeout=0.4)
     try:
-        with socket.create_connection(("127.0.0.1", int(port)), timeout=0.2):
-            return f"http://127.0.0.1:{port}/"
-    except OSError:
+        conn.request("GET", "/whoami")
+        r = conn.getresponse()
+        info = _json.loads(r.read(4096).decode("utf-8")) if r.status == 200 else {}
+    except (OSError, ValueError, http.client.HTTPException):
         return ""
+    finally:
+        conn.close()
+    return f"http://localhost:{port}/" if info.get("id") and info.get("id") == w.get("id") else ""
 
 
 def as_text(data: dict, color: bool = False) -> str:
@@ -474,11 +484,22 @@ def as_text(data: dict, color: bool = False) -> str:
 
 
 def start_web(root: Path) -> None:
-    """The web page's server, detached, unless one answers already."""
-    if web_url(root):
-        return
+    """The web page's server, detached, unless one answers already (or one was started a moment ago). Never in tests:
+    a server they started would outlive them."""
     import os
     import sys
+    import time as _time
+    if os.environ.get("PYTEST_CURRENT_TEST") and not os.environ.get("RESEARCH_DIFF_WEB_IN_TESTS"):
+        return
+    if os.environ.get("RESEARCH_DIFF_WEB", "").lower() in ("off", "0", "no") or web_url(root):
+        return
+    mark = store.home(root) / "web.starting"
+    try:
+        if _time.time() - mark.stat().st_mtime < 20:
+            return
+    except OSError:
+        pass
+    mark.write_text(str(_time.time()))
     flags = {"start_new_session": True} if os.name != "nt" else {"creationflags": 0x08000000 | 0x00000200}
     try:
         subprocess.Popen([sys.executable, "-m", "research_diff", "--repo", str(root), "watch", "--port", "0",

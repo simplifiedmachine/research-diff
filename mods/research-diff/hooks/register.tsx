@@ -15,7 +15,7 @@ import type { Act, Page, Row } from '../types'
 // green what is supported or new, white what to read, gray the background, red what contradicts.
 
 const PANE = 'research-diff'
-const VERSION = '0.4.0' // the plugin's own, as .claude-plugin/plugin.json says (a test keeps them one)
+const VERSION = '0.4.1' // the plugin's own, as .claude-plugin/plugin.json says (a test keeps them one)
 const WIDEST = 999 // as wide as Claude Code docks a pane: 45% of the terminal
 const COMMANDS = ['research-diff'] as const
 const VIEWS = [['now', 'Now', 'n'], ['review', 'Review', 'r'], ['evidence', 'Evidence', 'e'], ['paper', 'Paper', 'p'],

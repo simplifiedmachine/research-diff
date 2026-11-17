@@ -102,6 +102,8 @@ def read(text: str, path: str, def_rx: Optional[re.Pattern] = None) -> dict:
             fl["body"].append(body)
             if comment:
                 fl["comments"].append(comment)
+                if "research-diff: no-check" in comment:
+                    fl["no_check"] = True
             fl["numbers"] += numbers(re.sub(r"\\label\{[^}]*\}|\\caption", "", body), i) \
                 if "\\caption" not in body else []
             if END_RX.search(body):
@@ -134,6 +136,8 @@ def read(text: str, path: str, def_rx: Optional[re.Pattern] = None) -> dict:
             continue
         if cur is None:
             cur = {"line": i, "end": i, "section": section, "text": "", "markers": [], "refs": [], "numbers": []}
+        if "research-diff: no-check" in (comment if tex else line):
+            cur["no_check"] = True
         cur["end"] = i
         src = comment if tex else line
         if def_rx is not None and src:
@@ -171,12 +175,22 @@ def _say(num: dict) -> str:
     return num["raw"]
 
 
+def _decimals(x: float) -> int:
+    """The decimals a stored number carries (0.59 -> 2, 0.8734 -> 4): its own precision."""
+    t = repr(float(x))
+    if "e" in t or "E" in t:
+        return 12
+    return len(t.split(".")[1].rstrip("0")) if "." in t else 0
+
+
 def compare_number(num: dict, pool: List[Tuple[str, str, float]], near: float) -> Tuple[str, Optional[tuple]]:
-    """("match", (node, metric, value)) | ("stale", nearest) | ("none", None)."""
-    unit = 0.5 * 10 ** -num["decimals"] + 1e-9
+    """("match", (node, metric, value)) | ("stale", nearest) | ("none", None). Two numbers match when they agree at
+    the coarser of their two precisions: 58.7% is 0.59 kept with two decimals, not a stale 0.59."""
     best, gap = None, None
     for nid, key, val in pool:
         for f in _forms(val, num):
+            dec = _decimals(val) - (2 if f is not val and f != val else 0)
+            unit = 0.5 * 10 ** -min(num["decimals"], max(dec, 0)) + 1e-9
             d = abs(f - num["value"])
             if d <= unit:
                 return "match", (nid, key, val)
@@ -266,9 +280,9 @@ def check(papers: List[dict], nodes: Dict[str, dict], links: List[tuple]) -> Tup
                             scores[nid] = scores.get(nid, 0) + 1
                 best = sorted((-v, k) for k, v in scores.items() if v >= 2)
                 pool = _pool([best[0][1]], nodes) if best else []
-            judge(lab, fl["numbers"], pool, NEAR, p["path"], fl["section"])
+            judge(lab, [] if fl.get("no_check") else fl["numbers"], pool, NEAR, p["path"], fl["section"])
         for para in p["paragraphs"]:
-            if not para["numbers"]:
+            if not para["numbers"] or para.get("no_check"):
                 continue
             owners = [m for m in para["markers"] if m in nodes and nodes[m]["kind"] in ("claim", "finding")]
             if owners:
