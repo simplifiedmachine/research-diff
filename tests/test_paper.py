@@ -143,7 +143,7 @@ def test_the_web_page_joins_system_diffs_hub_and_opens_the_paper(study, tmp_path
     read = lambda path: urllib.request.urlopen(url + path, timeout=10).read().decode()  # noqa: E731
     who = json.loads(read("whoami"))
     assert who["app"] == "system-diff" and who["tool"] == "research-diff"          # system-diff's hub keeps it
-    entry = json.loads(next((tmp_path / "engines").glob("*.json")).read_text())
+    entry = json.loads(next((tmp_path / "engines").glob("*.json")).read_text(encoding="utf-8"))
     assert entry["name"] == "study · research" and entry["id"] == who["id"]
     projects = json.loads(read("projects"))["projects"]
     assert [(p["name"], p["tool"], p["current"]) for p in projects] == [("study · research", "research-diff", True)]
