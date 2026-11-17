@@ -15,11 +15,11 @@ import type { Act, Page, Row } from '../types'
 // green what is supported or new, white what to read, gray the background, red what contradicts.
 
 const PANE = 'research-diff'
-const VERSION = '0.3.0' // the plugin's own, as .claude-plugin/plugin.json says (a test keeps them one)
+const VERSION = '0.4.0' // the plugin's own, as .claude-plugin/plugin.json says (a test keeps them one)
 const WIDEST = 999 // as wide as Claude Code docks a pane: 45% of the terminal
 const COMMANDS = ['research-diff'] as const
 const VIEWS = [['now', 'Now', 'n'], ['review', 'Review', 'r'], ['evidence', 'Evidence', 'e'], ['paper', 'Paper', 'p'],
-               ['agents', 'Agents', 'a'], ['history', 'History', 'h']] as const
+               ['auto', 'Auto-research', 'u'], ['agents', 'Agents', 'a'], ['history', 'History', 'h']] as const
 // system-diff's pane: the two take turns beside the chat, never both. Opening one closes the other; the one called
 // last (kept in this plugin's store) is the one a new session opens on.
 const OTHER = 'system-diff'

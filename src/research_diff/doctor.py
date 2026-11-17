@@ -91,6 +91,14 @@ def report(root: Path, config_path: str = "") -> List[str]:
     out.append("· LLM features off (RESEARCH_DIFF_LLM=off)" if off else
                "✓ an LLM is reachable for objectives, suggest and narrate" if llm else
                "· no LLM found for objectives, suggest and narrate (optional)")
+    from . import autoresearch as ar
+    c = ar.campaign(root)
+    if c:
+        out.append(f"{'✓' if ar.runner_alive(root) or c['state'] not in ('running', 'paused') else '!'} auto-research "
+                   f"{c['state']}: iteration {len(c['iterations'])}/{c['max_iterations']}, runner "
+                   f"{'on' if ar.runner_alive(root) else 'off'}")
+    for s in ar.servers(root):
+        out.append(f"  server {s['name']}: {s['host']}, " + (f"GPU {s['gpus']}" if s["gpus"] else "CPU"))
     for name, folder in cfg["trackers"].items():
         if (root / folder).is_dir():
             out.append(f"✓ {name} runs in {folder}/ (research-diff sync)")

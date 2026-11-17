@@ -13,6 +13,7 @@ graph of what supports and what contradicts each claim of the paper, and what ea
     research-diff review [--patch]                                   -> your LLM reads the paper against itself
     research-diff history [--node ID] [--commits N]                  -> what you asked, what the research got
     research-diff history compare A B                                -> what changed between two points of it
+    research-diff auto [start GOAL|pause|resume|stop|server add NAME HOST|server check NAME] -> auto-research
     research-diff agents [plan TASK|claim NAME IDS|publish NAME TOPIC TEXT|inbox NAME|release NAME]
     research-diff objectives [add TEXT|clear ID|restore ID|learn]    -> what you optimise the study for
     research-diff comment [--base REF]                               -> a pull request's research diff, in Markdown
@@ -187,6 +188,42 @@ def _objectives(args, root: Path) -> int:
     return 0
 
 
+def _auto(args, root: Path) -> int:
+    from . import autoresearch as ar
+    a = args.rest
+    try:
+        if a[:1] == ["runner"]:
+            ar.run_forever(root)
+            return 0
+        if a[:2] == ["server", "add"] and len(a) == 4:
+            gpus = [int(g) for g in args.gpus.split(",") if g.strip()]
+            print(json.dumps(ar.save_server(root, a[2], a[3], args.workdir, gpus, args.setup, args.port)))
+            return 0
+        if a[:2] == ["server", "rm"] and len(a) == 3:
+            print("removed" if ar.remove_server(root, a[2]) else f"no server {a[2]}")
+            return 0
+        if a[:2] == ["server", "check"] and len(a) == 3:
+            s = next((x for x in ar.servers(root) if x["name"] == a[2]), None)
+            print(json.dumps(ar.check_server(root, s)) if s else f"no server {a[2]}")
+            return 0
+        if a[:2] == ["server", "list"]:
+            print(json.dumps(ar.servers(root), indent=1))
+            return 0
+        if a[:1] == ["start"] and len(a) >= 2:
+            ar.start(root, " ".join(a[1:]), args.target, args.max,
+                     [x for x in args.servers.split(",") if x] or None, [x for x in args.exp.split(",") if x] or None)
+        elif a[:1] and a[0] in ("pause", "resume", "stop"):
+            ar.control(root, a[0])
+        elif a and a[0] != "status":
+            print("research-diff auto: start GOAL | pause | resume | stop | status | server add NAME HOST", file=sys.stderr)
+            return 2
+    except ValueError as exc:
+        print(f"research-diff auto: {exc}", file=sys.stderr)
+        return 1
+    print(ar.as_text(root))
+    return 0
+
+
 def store_path(root: Path, name: str) -> Path:
     from . import store
     return store.home(root) / name
@@ -260,6 +297,17 @@ def parser() -> argparse.ArgumentParser:
     r.add_argument("--check", action="store_true")
     sub.add_parser("doctor", help="why research-diff is quiet, slow or wrong here")
     sub.add_parser("hub", help="the address that lists every project of system-diff and research-diff")
+    au = sub.add_parser("auto", help="auto-research: launch, check, collect and improve experiments on your servers")
+    au.add_argument("rest", nargs="*", help="start GOAL | pause | resume | stop | status | runner | "
+                                            "server add NAME HOST | server rm NAME | server check NAME | server list")
+    au.add_argument("--target", default="", help="when to stop: RESULT METRIC > NUMBER")
+    au.add_argument("--max", type=int, default=5, help="the iteration budget")
+    au.add_argument("--servers", default="", help="names, comma-separated (default: all)")
+    au.add_argument("--exp", default="", help="the first iteration's experiments (default: Claude plans it)")
+    au.add_argument("--workdir", default="")
+    au.add_argument("--gpus", default="", help="GPU indices, e.g. 0,1,2,3")
+    au.add_argument("--setup", default="", help="run before each job, e.g. 'source ~/venv/bin/activate'")
+    au.add_argument("--port", type=int, default=0)
     ol = sub.add_parser("outline", help="a paper or notes file, section by section, its numbers checked")
     ol.add_argument("path")
     ol.add_argument("--summarize", action="store_true", help="and your LLM's summary of each section (kept)")
@@ -292,7 +340,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.cmd in ("show", "panel"):
         from . import page
         if args.cmd == "panel":
-            data = page.show(root, args.view, args.part, args.width, args.base, args.config)
+            data = page.show(root, args.view, args.part, args.width, args.base, args.config, deliver=True)
             sys.stdout.write(json.dumps(data, ensure_ascii=False))
             return 0
         import shutil
@@ -323,6 +371,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _agents(args, root)
     if args.cmd == "objectives":
         return _objectives(args, root)
+    if args.cmd == "auto":
+        return _auto(args, root)
     if args.cmd == "hub":
         from . import hub
         port = hub.find_hub()

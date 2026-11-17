@@ -152,8 +152,8 @@ const PageView: ClientModule<JsonValue, State> = (raw, surface) => {
       surface.post({ follow: true })
     } else if (e.key === 'h') { // History: of the picked box (a part, a container), else of the whole system
       surface.post({ history: sel.startsWith('b:') ? sel.slice(2) : '' })
-    } else if (['n', 'r', 'e', 'p', 'a'].includes(e.key)) {
-      surface.post({ view: { n: 'now', r: 'review', e: 'evidence', p: 'paper', a: 'agents' }[e.key] ?? 'now' })
+    } else if (['n', 'r', 'e', 'p', 'u', 'a'].includes(e.key)) {
+      surface.post({ view: { n: 'now', r: 'review', e: 'evidence', p: 'paper', u: 'auto', a: 'agents' }[e.key] ?? 'now' })
     }
   })
   // The detail of the picked block, in the slot under its picture.

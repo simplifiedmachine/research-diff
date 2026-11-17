@@ -32,7 +32,8 @@ INSTRUCTIONS = (
     "splits it into agents; each agent claims its nodes, publishes what it changes and reads its inbox. "
     "paper_outline shows the paper section by section with every number checked against the results, and "
     "review_paper where the paper contradicts itself: keep experiments, results and claims hand in hand. When "
-    "explaining, point_to the nodes you name. Call checkpoint only when the person says they have understood the "
+    "explaining, point_to the nodes you name. When auto-research is on, autoresearch_status says what is asked of "
+    "you: analyse each iteration and autoresearch_submit the next. Call checkpoint only when the person says they have understood the "
     "current state."
 )
 LOG = "research/log.md"
@@ -253,6 +254,52 @@ def build() -> Server:
         if node not in cmp.read(root, ".")[0]["nodes"]:
             return {"error": f"{node} is not on the map"}
         return chat.add_note(root, node, text)
+
+    @_read_only(server)
+    def autoresearch_status() -> Dict[str, Any]:
+        """Auto-research: the campaign (goal, target, budget, state), each iteration's experiments on the servers'
+        GPUs with their state and the tail of their logs, and what is asked of you now (`pending`)."""
+        from . import autoresearch as ar
+        root = repo_root()
+        st = ar.status(root)
+        return {"text": ar.as_text(root), "pending": st["pending"], "state": st["campaign"].get("state", "off"),
+                "servers": [s["name"] for s in st["servers"]], "runner": st["runner"]}
+
+    @server.tool()
+    def autoresearch_submit(experiments: List[Dict[str, Any]], reason: str, analysis: str = "") -> Dict[str, Any]:
+        """The next auto-research iteration, after you made the changes it needs (configs, code): `experiments`
+        [{"experiment": "E2", "command"?: overrides its `run:`, "gpus"?: how many (default 1), "server"?: a name}];
+        `reason`: what you changed and why; `analysis`: what the last iteration's results showed (numbers, verdicts,
+        contradictions). The runner launches them on free GPUs and asks you again when they end."""
+        from . import autoresearch as ar
+        root = repo_root()
+        try:
+            c = ar.submit(root, experiments, reason, analysis)
+        except ValueError as exc:
+            return {"error": str(exc)}
+        return {"iteration": len(c["iterations"]), "jobs": c["iterations"][-1]["jobs"],
+                "left": c["max_iterations"] - len(c["iterations"])}
+
+    @server.tool()
+    def autoresearch_finish(summary: str) -> Dict[str, Any]:
+        """End auto-research: the goal is met, or it cannot be from here. `summary`: what was found, with the numbers,
+        and what the paper should now say."""
+        from . import autoresearch as ar
+        try:
+            ar.finish(repo_root(), summary)
+        except ValueError as exc:
+            return {"error": str(exc)}
+        return {"done": True}
+
+    @server.tool()
+    def autoresearch_control(action: str) -> Dict[str, Any]:
+        """pause, resume or stop auto-research: ONLY when the person asks for it."""
+        from . import autoresearch as ar
+        try:
+            c = ar.control(repo_root(), action)
+        except ValueError as exc:
+            return {"error": str(exc)}
+        return {"state": c["state"]}
 
     return server
 

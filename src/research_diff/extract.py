@@ -38,7 +38,7 @@ RELS = {"answers": "answers", "tests": "tests", "of": "of", "supports": "support
 # Written on the other end: `C1 supported by: R1` is `R1 supports C1`.
 REVERSE = {"supported by": "supports", "evidence": "supports", "weakened by": "weakens",
            "contradicted by": "contradicts", "refuted by": "contradicts"}
-ATTRS = ("status", "metrics", "results", "sources", "source", "expects", "by", "owner", "section")
+ATTRS = ("status", "metrics", "results", "sources", "source", "expects", "by", "owner", "section", "run")
 KEYS = "|".join(sorted(list(RELS) + list(REVERSE) + list(ATTRS), key=len, reverse=True))
 ATTR_RX = re.compile(rf"^\s*(?:[-*+]\s+)?\**({KEYS})\**\s*:\s*(.+?)\s*$", re.I)
 COMMENT_RX = re.compile(r"(?:#|//|%)\s*research-diff:\s*(.+)$", re.M)
@@ -97,6 +97,8 @@ class Model:
         elif key in REVERSE:
             for source in _ids(value, self.kinds):
                 self.links.add((source, REVERSE[key], nid))
+        elif key == "run":           # how to run an experiment: what auto-research launches
+            n["run"] = value.strip().strip("`")
         elif key in ("by", "owner"):
             n["by"] = value.strip().strip("`'\"")
         elif key == "section":
@@ -175,8 +177,8 @@ def _mini_yaml_block(text: str) -> Optional[dict]:
                 key, val = kv.group(1).strip(), kv.group(2).strip()
                 if val.startswith("[") and val.endswith("]"):
                     out[key] = [x.strip().strip("'\"") for x in val[1:-1].split(",") if x.strip()]
-                elif val:
-                    out[key] = val.strip("'\"")
+                elif val:   # quotes only around the whole value: a command keeps its own
+                    out[key] = val[1:-1] if len(val) > 1 and val[0] == val[-1] and val[0] in "'\"" else val
         return out
     return None
 
@@ -289,6 +291,8 @@ def extract(source, cfg: Dict[str, Any]) -> dict:
             val = block.get(key) or block.get(key.replace(" ", "_"))
             if val:
                 m.attr(nid, key, ", ".join(val) if isinstance(val, list) else str(val), f)
+        if block.get("run"):
+            m.attr(nid, "run", str(block["run"]), f)
         if block.get("status"):
             m.attr(nid, "status", str(block["status"]), f)
         for ref in ([block["results"]] if isinstance(block.get("results"), str) else block.get("results") or []):

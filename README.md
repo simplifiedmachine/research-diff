@@ -133,7 +133,7 @@ no experiment, and when a link points at nothing.
 
 ## In Claude Code
 
-- **The pane**: `n` Now · `r` Review · `e` Evidence · `p` Paper · `a` Agents · `h` History. Arrows pick a claim (its
+- **The pane**: `n` Now · `r` Review · `e` Evidence · `p` Paper · `u` Auto-research · `a` Agents · `h` History. Arrows pick a claim (its
   evidence lights up), Enter zooms into its evidence chain, `b` goes back, `f` follows Claude. `/research-diff tui`
   opens the same in a terminal of its own, and `research-diff watch` in a browser. With system-diff's plugin there too,
   the two panes take turns beside the chat: opening one closes the other, and a new session opens on the one you
@@ -160,6 +160,44 @@ no experiment, and when a link points at nothing.
 - **Objectives**: research-diff learns what you keep asking for ("three seeds for every number", "don't claim beyond
   the 8k split"), shows it, keeps it in front of Claude and every agent, and marks changes that touch it. `x` clears
   one you disagree with; `research-diff objectives add TEXT` states one.
+
+## Auto-research
+
+Research is iterations: run, look at what came out, improve, run again. The **Auto-research** tab (on the web page,
+and `u` in the pane) runs that loop on your servers, while you watch it:
+
+1. **Servers**: add this machine (`local`) or SSH hosts your keys already reach (no password is asked or kept), with
+   a working directory, a setup command (`source ~/venv/bin/activate`) and their GPUs; **Check** reaches the server
+   and lists its GPUs (`nvidia-smi`), **Use these GPUs** keeps them.
+2. **Start** with a goal, an optional target (`E2.results acc.batch512 > 0.88`, as `expects:` writes it), an
+   iteration budget, the servers to use, and the first experiments (or none: Claude plans the first iteration).
+3. Each experiment runs its **`run:`** command (beside `results:` in its research block, from the repository's
+   root), on a free GPU (`CUDA_VISIBLE_DEVICES`, one job per GPU), the code copied there with rsync. Its state and the
+   tail of its log are on the page; when it ends, its results file comes back into the repository, so the map, the
+   evidence graph and the paper's number checks move with it.
+4. When an iteration ends, **Claude analyses it and improves the experiments** (configs, code, the next settings),
+   then submits the next iteration with its analysis and why (`autoresearch_submit`), until the target holds, the
+   budget is spent, or it calls `autoresearch_finish` with what was found.
+
+```yaml
+research:
+  id: E2
+  tests: [H3]
+  run: python train.py --config configs/e2.yaml      # what auto-research launches
+  results: ../out/e2.json                            # what it brings back
+```
+
+**Pause** launches nothing new (running jobs go on and are collected), **Resume** goes on, **Stop** kills the running
+jobs. **It survives a disconnect**: the launching, checking and collecting is a runner process of its own, and jobs go
+on on the servers; when the session comes back, it is told where the loop stands and goes on improving. While the
+session is open, the pane hands each finished iteration to Claude, and the Stop hook keeps Claude on it.
+
+```sh
+research-diff auto server add lab me@gpu-box --workdir ~/runs --gpus 0,1,2,3 --setup "source ~/venv/bin/activate"
+research-diff auto server check lab
+research-diff auto start "Does the gap close with the learning rate scaled?" --target "E2.results acc.batch512 > 0.87" --max 5
+research-diff auto status | pause | resume | stop
+```
 
 ## Teams of agents
 

@@ -164,7 +164,11 @@ def on_tool(root: Path, p: dict) -> dict:
 
 
 def on_prompt(root: Path, p: dict) -> dict:
+    from . import autoresearch
     activity.record(root, "prompt", text=(p.get("prompt") or "")[:2000])
+    autoresearch.ensure_runner(root)
+    if (p.get("prompt") or "").startswith("Auto-research goal:"):
+        autoresearch.told(root)
     try:
         compare.mark_turn(root)
         store.write(root, "last.json", compare.read(root, ".")[0])
@@ -182,8 +186,15 @@ def on_start(root: Path, p: dict) -> dict:
     if os.environ.get("RESEARCH_DIFF_WEB", "").lower() not in ("off", "0", "no"):
         from .page import start_web
         start_web(root)
+    from . import autoresearch
+    autoresearch.ensure_runner(root)          # jobs went on while the session was away: follow them again
     try:
-        return _context("SessionStart", where_it_stands(root))
+        ctx = where_it_stands(root)
+        ask = autoresearch.pending(root)
+        if ask:
+            autoresearch.told(root)
+            ctx += "\n\nAuto-research is on and waits for you (it went on while you were away):\n" + ask
+        return _context("SessionStart", ctx)
     except (OSError, subprocess.CalledProcessError, ValueError, KeyError):
         return {}
 
@@ -218,9 +229,12 @@ def on_stop(root: Path, p: dict, subagent: bool = False) -> dict:
     except (OSError, subprocess.CalledProcessError, ValueError, KeyError):
         pass
     if not subagent:
-        from . import chat
+        from . import autoresearch, chat
         chat.answered(root, p)
         objectives.ensure(root)
+        ask = autoresearch.nudge(root)     # an iteration ended and waits for its analysis: keep Claude on it
+        if ask:
+            out.update(decision="block", reason=ask)
     return out
 
 

@@ -10,6 +10,8 @@ lights when picked. The same page is painted by the pane beside the chat in Clau
             checked against the results, a summary of each section by your LLM (✦), and the LLM's review
   agents    the team: what each agent owns, its verdicts, where it contradicts another agent, and the bus
   history   how the research got here: what you asked, what it got
+  auto      auto-research: the campaign (goal, target, budget), each iteration's experiments on your servers' GPUs,
+            their state and logs, Claude's analysis and what it changed
 
 Styles are words: accent (blue: where Claude is, what you picked), attention (yellow: contested, needs you), good
 (green: supported, new), removed (red: contradicted, taken away), muted, heading, bold, title, agent0..agent4.
@@ -25,7 +27,7 @@ from typing import Dict, List, Optional
 from . import activity, agents, compare, evidence, history, objectives, rank, store
 from .evidence import WORD
 
-VIEWS = ("now", "review", "evidence", "paper", "agents", "history")
+VIEWS = ("now", "review", "evidence", "paper", "agents", "history", "auto")
 STYLE = {"supported": "good", "contested": "attention", "contradicted": "removed bold", "unsupported": "muted",
          "holds": "muted"}
 ICON = {"supported": "✓", "contested": "◐", "contradicted": "✗", "unsupported": "○", "holds": "·"}
@@ -302,6 +304,46 @@ def view_paper(L: dict, p: Page) -> None:
             p.row(("      “" + q + "”", "muted"))
 
 
+def view_auto(L: dict, p: Page) -> None:
+    from . import autoresearch as ar
+    root = L["root"]
+    c = ar.campaign(root)
+    ss = ar.servers(root)
+    p.row(("Servers: ", "muted"), (", ".join(f"{s['name']} ({s['host']}, " + (f"GPU {','.join(map(str, s['gpus']))}"
+                                                                             if s["gpus"] else "CPU") + ")"
+                                             for s in ss) or "none yet", ""))
+    if not c:
+        p.row(("Auto-research is off. On the web page (Auto-research tab), or: research-diff auto server add NAME "
+               "local|HOST --gpus 0,1, then research-diff auto start \"GOAL\" --target 'E1.results acc > 0.9'.", "muted"))
+        return
+    style = {"running": "good", "paused": "attention", "stopping": "removed", "stopped": "muted", "done": "good"}
+    p.row(("● " if c["state"] == "running" else "‖ " if c["state"] == "paused" else "■ ", style.get(c["state"], "")),
+          (f"Auto-research {c['state']}: ", style.get(c["state"], "") + " bold"), (c["goal"], "bold"))
+    p.row((f"  target {c['target'] or 'none'} · iteration {len(c['iterations'])} of {c['max_iterations']} · "
+           f"runner {'on' if ar.runner_alive(root) else 'off (starts by itself)'}", "muted"))
+    if c.get("summary"):
+        p.row(("  " + c["summary"], "good"))
+    jstyle = {"done": "good", "failed": "removed", "running": "accent", "queued": "muted", "killed": "muted"}
+    for it in reversed(c["iterations"]):
+        p.heading(f"Iteration {it['n']}", it["state"] + (f": {it['reason'][:120]}" if it["reason"] else ""))
+        if it.get("analysis"):
+            p.row(("  analysis: ", "muted"), (it["analysis"][:240], ""))
+        for k in it["jobs"]:
+            j = c["jobs"][k]
+            y = p.row((f"  {j['id']} ", "muted"), (f"{j['experiment']:<8}", "bold"), (f"{j['state']:<8}", jstyle.get(j["state"], "")),
+                      (f" {j['server'] or ''}" + (f" GPU {','.join(map(str, j['gpus']))}" if j["gpus"] else ""), "muted"),
+                      (f"  {j['why']}" if j["why"] else "", "removed" if j["state"] == "failed" else "muted"))
+            if j["experiment"]:
+                p.block(f"j:{k}", y, {"zoom": j["experiment"]})
+            if j["state"] in ("running", "failed") and j["tail"]:
+                for line in j["tail"].splitlines()[-3:]:
+                    p.row(("      " + line[:150], "muted"))
+    if c.get("events"):
+        p.heading("What happened")
+        for e in reversed(c["events"][-8:]):
+            p.row((time.strftime("  %H:%M ", time.localtime(e["at"])), "muted"), (e["text"], ""))
+
+
 def view_agents(L: dict, p: Page) -> None:
     root, g = L["root"], L["graph"]
     s = agents.state(root)
@@ -364,15 +406,26 @@ def view_history(L: dict, p: Page) -> None:
 
 
 def show(root: Path, view: str = "now", part: str = "", width: int = 100, base: str = "checkpoint",
-         config_path: Optional[str] = None) -> dict:
+         config_path: Optional[str] = None, deliver: bool = False) -> dict:
+    """The page of one view. `deliver`: the pane is asking: it takes what waits to be submitted to the session (what
+    was typed on the web page, and auto-research's ask when an iteration ended), once."""
     L = look(root, base, config_path)
     p = Page(view if view in VIEWS else "now", part, width)
-    {"now": view_now, "review": view_review, "evidence": view_evidence, "paper": view_paper, "agents": view_agents,
+    {"now": view_now, "review": view_review, "evidence": view_evidence, "paper": view_paper, "auto": view_auto,
+     "agents": view_agents,
      "history": view_history}[p.view](L, p)
     data = p.data()
     data["web"] = web_url(root)
     data["research"] = bool(L["map"]["nodes"])    # the pane opens by itself only where there is research
-    data["send"] = take_outbox(root)
+    data["send"] = take_outbox(root) if deliver else []
+    if deliver:
+        from . import autoresearch
+        autoresearch.ensure_runner(root)      # the pane is open: the session is here, the runner should be too
+        ask = autoresearch.untold(root)
+        if ask:
+            c = autoresearch.campaign(root)
+            data["send"].append({"id": f"auto-{c['id']}-{len(c['iterations'])}-{c.get('ask', '')}", "text": ask})
+            autoresearch.told(root)
     activity.write_state(root, headline=L["cmp"].diff["headline"], evidence=L["graph"]["headline"],
                          worth=[w["title"] for w in L["worth"][:2]], focus=list(L["focus"] or []),
                          contradictions=sum(1 for e in L["graph"]["edges"] if e["effective"] in ("-", "?")))
