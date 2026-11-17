@@ -185,10 +185,9 @@ def test_the_page_address_is_only_this_repositorys_engine(study, tmp_path):
     assert not (store.home(study) / "web.starting").exists()
 
 
-def test_an_engine_goes_when_its_repository_does(study):
-    import shutil
+def test_an_engine_goes_when_its_repository_does(study, tmp_path):
     from research_diff import watch
     w = watch.Watcher(study, "checkpoint", None, 1)
     assert not w.gone()
-    shutil.rmtree(study / ".git")
+    w.root = tmp_path / "deleted"          # its repository, gone (git's read-only objects make rmtree fail on Windows)
     assert w.gone()
