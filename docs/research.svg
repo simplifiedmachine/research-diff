@@ -64,6 +64,7 @@ text { font-family: 'Segoe UI', FreeSans, 'Helvetica Neue', Arial, sans-serif; }
 <path class="be k-call s-same" d="M806,52 C777,52 777,52 748,52" marker-end="url(#ar-call-same)"><title>E1.results → E1</title></path>
 <path class="be k-call s-same" d="M542,128 C513,128 513,204 484,204" marker-end="url(#ar-call-same)"><title>E2 → H3</title></path>
 <path class="be k-call s-same" d="M806,157 C777,157 777,128 748,128" marker-end="url(#ar-call-same)"><title>E2.results → E2</title></path>
+<path class="be k-call s-same" d="M1070,52 C1038,52 1038,128 1006,128 L806,128 C777,128 777,128 748,128" marker-end="url(#ar-call-same)"><title>F1 → E2</title></path>
 <path class="be k-call s-same" d="M278,52 C249,52 249,52 220,52" marker-end="url(#ar-call-same)"><title>H1 → Q1</title></path>
 <path class="be k-call s-same" d="M278,128 C249,128 249,52 220,52" marker-end="url(#ar-call-same)"><title>H2 → Q1</title></path>
 <path class="be k-call s-same" d="M278,204 C249,204 249,52 220,52" marker-end="url(#ar-call-same)"><title>H3 → Q1</title></path>
@@ -95,5 +96,5 @@ text { font-family: 'Segoe UI', FreeSans, 'Helvetica Neue', Arial, sans-serif; }
 <text x="210.9" y="437" class="lg">supports</text>
 <path class="be k-network" d="M278.6,433 L298.6,433" style="opacity:1"/>
 <text x="304.6" y="437" class="lg">weakens or contradicts</text>
-<text class="foot" x="16" y="463">3 warnings: C1 is contradicted by C2; C3 expects E2.results acc.batch512 &lt; 0.85, but it is 0.872; H2 is open and no experiment tests it</text>
+<text class="foot" x="16" y="463">4 warnings: C1 is contradicted by C2; C3 expects E2.results acc.batch512 &lt; 0.85, but it is 0.872; H2 is open and no experiment tests it …</text>
 </svg>

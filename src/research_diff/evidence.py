@@ -59,6 +59,8 @@ def _edges(bp: dict, cfg: dict) -> List[dict]:
             add(s, t, "-", "contradicts", f"{s} contradicts {t}")
         elif rel == "weakens":
             add(s, t, "-", "weakens", f"{s} weakens {t}")
+        elif rel == "shows" and nodes[s]["kind"] in ("table", "figure"):
+            add(s, t, "+", "shows", f"{t} points at {s}" + (f" ({nodes[s]['title'][:50]})" if nodes[s]["title"] else ""))
     for nid, n in nodes.items():
         for e in n.get("expects", []):
             m = EXPECT_RX.match(e)
@@ -72,6 +74,10 @@ def _edges(bp: dict, cfg: dict) -> List[dict]:
                 add(target, nid, "+", "expects", f"{metric} = {got:g}, as {nid} expects ({op} {want:g})")
             else:
                 add(target, nid, "-", "expects", f"{metric} = {got:g}, but {nid} expects {op} {want:g}")
+    for c in bp.get("checks", []):         # the numbers the paper prints, against the results (paper.py)
+        if c["from"] in nodes and c["to"] in nodes:
+            out.setdefault((c["from"], c["to"], "number" + c["sign"]),
+                           {"from": c["from"], "to": c["to"], "sign": c["sign"], "kind": "number", "why": c["why"]})
     if cfg.get("evidence", {}).get("citations"):
         for nid, n in nodes.items():
             for key in n.get("sources", []):
@@ -81,8 +87,16 @@ def _edges(bp: dict, cfg: dict) -> List[dict]:
 
 def build(bp: dict, cfg: dict, owners: Optional[Dict[str, str]] = None) -> dict:
     """The evidence graph of a research map: nodes, edges, a verdict per statement, conflicts, and one sentence."""
-    statements = set(cfg.get("evidence", {}).get("statements", ["claim", "finding"]))
-    nodes = bp["nodes"]
+    statements = set(cfg.get("evidence", {}).get("statements", ["claim", "finding"])) | {"paragraph"}
+    # A paragraph with no marker whose numbers disagree with the results (an abstract restating an old number) is a
+    # statement of the paper too: drawn in its section, contradicted by the result.
+    nodes = dict(bp["nodes"])
+    for i in bp.get("issues", []):
+        nodes.setdefault(i["node"], {"kind": "paragraph", "title": i.get("text") or f"a paragraph of {i['section']}",
+                                     "status": "", "files": [i["file"]], "metrics": {}, "sources": [],
+                                     "section": i["section"], "line": int(i["node"].rsplit(":", 1)[1])})
+    bp = {**bp, "nodes": nodes, "checks": list(bp.get("checks", [])) + [
+        {"from": i["from"], "to": i["node"], "sign": "-", "why": i["why"]} for i in bp.get("issues", [])]}
     edges = _edges(bp, cfg)
     owners = owners or {}
     into: Dict[str, List[dict]] = {}
@@ -216,7 +230,7 @@ def _order(nid: str, nodes: dict) -> tuple:
     if n is None:
         return (9, "", 0, nid)
     m = re.match(r"([A-Za-z])(\d+)", nid)
-    paper = n["kind"] in ("claim", "finding")      # the paper's statements in the paper's own order
+    paper = n["kind"] in ("claim", "finding", "paragraph")      # the paper's statements in the paper's own order
     return (4 if paper else "QHERFC".find(nid[0]) if m else 9, (n["files"] or [""])[0] if paper else "",
             n.get("line", 0) if paper else int(m.group(2)) if m else 0, nid)
 

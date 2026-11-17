@@ -199,8 +199,15 @@ def on_stop(root: Path, p: dict, subagent: bool = False) -> dict:
         c = compare.compare(root, "turn", ".")
         if c.diff["changes"]:
             by = sorted(activity.edited_since(root, 0).keys())[-5:] if subagent else []
+            from system_diff.compare import snapshot
             history.record(root, history.entry(c.diff, c.after, "turn", activity.last_request(root),
-                                               by=[who] if subagent else by))
+                                               by=[who] if subagent else by, base=compare.resolve(root, "turn")[0],
+                                               head=snapshot(root)))
+            paper_files = {x["path"] for x in c.after.get("paper", [])}
+            began = (activity.requests(root, 1) or [{"at": 0}])[-1].get("at", 0)
+            if not subagent and any(f in paper_files for fs in activity.edited_since(root, began).values() for f in fs):
+                from . import review
+                review.ensure(root)       # the paper changed this turn: read it against itself again
             if subagent:
                 agents.publish(root, who, "*", f"finished: {c.diff['headline']}", auto=True)
         g = evidence.build(c.after, c.cfg, agents.owners(root))
@@ -211,6 +218,8 @@ def on_stop(root: Path, p: dict, subagent: bool = False) -> dict:
     except (OSError, subprocess.CalledProcessError, ValueError, KeyError):
         pass
     if not subagent:
+        from . import chat
+        chat.answered(root, p)
         objectives.ensure(root)
     return out
 

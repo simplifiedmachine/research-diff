@@ -29,7 +29,8 @@ VERDICT_ICON = {"supported": "✓", "contested": "◐", "contradicted": "✗", "
 EDGE_COLOR = {"+": "#2e7d32", "~": "#e08a00", "-": "#c62828", "?": "#c62828", "0": "#b0b6bf", "o": "#8a8f98"}
 AGENT_COLORS = ["#1565c0", "#6a1b9a", "#00838f", "#ad1457", "#5d4037", "#283593", "#558b2f", "#ef6c00"]
 KIND_WORD = {"result": "result", "experiment": "experiment", "hypothesis": "hypothesis", "claim": "claim",
-             "finding": "finding", "question": "question", "source": "citation", "note": "note"}
+             "finding": "finding", "question": "question", "source": "citation", "note": "note", "table": "table",
+             "figure": "figure", "paragraph": "paragraph, no marker"}
 
 
 def wrap(text: str, n: int = CHARS, most: int = 3) -> List[str]:
@@ -342,6 +343,8 @@ margin-bottom:8px;cursor:pointer}
 h1{font-size:17px;margin:0 0 4px}.muted{color:var(--muted);font-size:12.5px}
 .dim{opacity:.13;transition:opacity .15s}.hide{display:none}
 g.node{cursor:pointer}
+g.node.pointed rect:first-of-type{stroke:#1565c0;stroke-width:4}
+.card .note{color:#1565c0;font-size:12.5px;margin-top:4px}
 </style>
 <div class="wrap">
  <div class="graph" id="graph">__SVG__</div>
@@ -403,10 +406,13 @@ for (const s of [...G.statements].sort((a, b) => order[a.verdict] - order[b.verd
   d.innerHTML = `<div><b>${s.id}</b> ${s.title.replace(/[<&]/g, c => ({'<':'&lt;','&':'&amp;'}[c]))}</div>
     <div class="v" style="color:${{supported:'#2e7d32',contested:'#e08a00',contradicted:'#c62828',unsupported:'#8a8f98'}[s.verdict]}">
     ${W[s.verdict]}${s.section ? ' · § ' + s.section : ''}${s.owner ? ' · ' + s.owner : ''}</div>
-    <ul>${s.against.map(x => li(x, 'against')).join('')}${s.for.map(x => li(x, '')).join('')}</ul>`;
+    <ul>${s.against.map(x => li(x, 'against')).join('')}${s.for.map(x => li(x, '')).join('')}</ul>` +
+    (G.notes[s.id] || []).map(t => `<div class="note">✎ Claude: ${t.replace(/[<&]/g, c => ({'<':'&lt;','&':'&amp;'}[c]))}</div>`).join('');
   d.onclick = () => { focus = focus === s.id ? null : s.id; draw(); };
   cards.appendChild(d);
 }
+for (const n of nodes) n.classList.toggle('pointed', G.pointing.includes(n.dataset.id));
+if (G.pointing.length) { const first = nodes.find(n => n.dataset.id === G.pointing[0]); if (first) first.scrollIntoView({block: 'center', inline: 'center'}); }
 draw();
 </script>
 """
@@ -414,7 +420,8 @@ draw();
 
 def html(g: dict, title: str = "Evidence map") -> str:
     """A page of its own (no outside files): the graph, the statements by verdict, and the filters."""
-    data = json.dumps({k: g[k] for k in ("headline", "nodes", "edges", "statements")}, ensure_ascii=False)
+    data = json.dumps({**{k: g[k] for k in ("headline", "nodes", "edges", "statements")},
+                       "notes": g.get("notes", {}), "pointing": g.get("pointing", [])}, ensure_ascii=False)
     return (PAGE.replace("__TITLE__", escape(title)).replace("__SVG__", svg(g, title))
             .replace("__DATA__", data.replace("</", "<\\/")))
 

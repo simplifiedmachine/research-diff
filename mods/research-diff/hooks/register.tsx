@@ -15,11 +15,16 @@ import type { Act, Page, Row } from '../types'
 // green what is supported or new, white what to read, gray the background, red what contradicts.
 
 const PANE = 'research-diff'
-const VERSION = '0.2.0' // the plugin's own, as .claude-plugin/plugin.json says (a test keeps them one)
+const VERSION = '0.3.0' // the plugin's own, as .claude-plugin/plugin.json says (a test keeps them one)
 const WIDEST = 999 // as wide as Claude Code docks a pane: 45% of the terminal
 const COMMANDS = ['research-diff'] as const
-const VIEWS = [['now', 'Now', 'n'], ['review', 'Review', 'r'], ['evidence', 'Evidence', 'e'], ['agents', 'Agents', 'a'],
-               ['history', 'History', 'h']] as const
+const VIEWS = [['now', 'Now', 'n'], ['review', 'Review', 'r'], ['evidence', 'Evidence', 'e'], ['paper', 'Paper', 'p'],
+               ['agents', 'Agents', 'a'], ['history', 'History', 'h']] as const
+// system-diff's pane: the two take turns beside the chat, never both. Opening one closes the other; the one called
+// last (kept in this plugin's store) is the one a new session opens on.
+const OTHER = 'system-diff'
+const STARTED = Date.now()
+let autoOpen = false // the session started: open once the first page shows there is research here
 
 const page = atom({ plugin: 'research-diff', key: 'page' } as const, null as Page | null, { shape: 'page-2' })
 const view = atom({ plugin: 'research-diff', key: 'view' } as const, 'now', { shape: 'view-1' })
@@ -204,6 +209,10 @@ async function apply($: EngineInterface, out: string, data: Page, key: string): 
   }
   noted = false
   if (!(data.rows?.length)) return false
+  if (autoOpen && (data as Page & { research?: boolean }).research) {
+    autoOpen = false
+    void open($)
+  }
   drawnVersion = v
   drawnKey = key
   if (out !== last) {
@@ -494,13 +503,22 @@ async function terminal($: EngineInterface): Promise<string> {
   return `Run this in a new terminal tab or window${where}:\n  ${line}\n(No terminal could be opened from here.)`
 }
 
-function open($: EngineInterface) {
+async function open($: EngineInterface, chosen = false) {
+  try {
+    await $.ui.close({ id: OTHER })
+  } catch {
+    // not open, or not installed
+  }
+  if (chosen) {
+    try { await $.store.set('last-pane', PANE) } catch { /* only a preference */ }
+  }
   return $.ui.open({ id: PANE, title: 'Research diff', columns: WIDEST })
 }
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    void open($)
+    // Open on the first page that has research on it, unless system-diff's pane was the one called last.
+    try { autoOpen = (await $.store.get('last-pane')) !== OTHER } catch { autoOpen = true }
     // `/research-diff` opens it; `/research-diff-pane` too, the name it had first. A name someone else holds is skipped.
     for (const name of COMMANDS) {
       try {
@@ -523,13 +541,23 @@ export const register: Register = on => {
       }
       if (e.args.trim().toLowerCase() === 'tui') return { text: await terminal($) }
       await refresh($)
-      await open($)
-      return { text: 'Research diff pane opened.' }
+      await open($, true)
+      return { text: 'Research diff pane opened (in place of the System diff pane, if it was open).' }
     })
   }
 
   // The engine's own diff of the files sits beside this one: name it for what it is.
-  on('ui.open', async ($, e, next) => next(e.title === 'Diff' ? { ...e, title: 'File diff' } : e))
+  // system-diff's pane opening: this one makes way. Called by the person (not as its session opens): remembered.
+  on('ui.open', async ($, e, next) => {
+    if ((e as { id?: string }).id === OTHER) {
+      autoOpen = false
+      try { await $.ui.close({ id: PANE }) } catch { /* not open */ }
+      if (Date.now() - STARTED > 15000) {
+        try { await $.store.set('last-pane', OTHER) } catch { /* only a preference */ }
+      }
+    }
+    return next(e.title === 'Diff' ? { ...e, title: 'File diff' } : e)
+  })
 
   on('tool.call', async ($, e, next) => {
     const ran = await next(e)

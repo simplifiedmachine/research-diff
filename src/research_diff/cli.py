@@ -7,8 +7,12 @@ graph of what supports and what contradicts each claim of the paper, and what ea
                                                                      -> diff.json, diff.svg, plan.txt, headline.txt
     research-diff show [ID] [--view now|review|evidence|agents|history]  -> the pane's views, in any terminal
     research-diff tui                                                -> the same, live, in a terminal of its own
-    research-diff watch [--port 8766]                                -> the same, live, in a browser
+    research-diff watch                                              -> the same, live, in a browser
+    research-diff hub                                                -> one address for every project, both tools
+    research-diff outline FILE [--summarize]                         -> a paper or notes file, section by section
+    research-diff review [--patch]                                   -> your LLM reads the paper against itself
     research-diff history [--node ID] [--commits N]                  -> what you asked, what the research got
+    research-diff history compare A B                                -> what changed between two points of it
     research-diff agents [plan TASK|claim NAME IDS|publish NAME TOPIC TEXT|inbox NAME|release NAME]
     research-diff objectives [add TEXT|clear ID|restore ID|learn]    -> what you optimise the study for
     research-diff comment [--base REF]                               -> a pull request's research diff, in Markdown
@@ -183,6 +187,11 @@ def _objectives(args, root: Path) -> int:
     return 0
 
 
+def store_path(root: Path, name: str) -> Path:
+    from . import store
+    return store.home(root) / name
+
+
 def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="research-diff", description=__doc__.split("\n")[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -222,6 +231,7 @@ def parser() -> argparse.ArgumentParser:
     pn.add_argument("--base", default="checkpoint")
     sub.add_parser("statusline", help="what Claude Code's status line runs")
     h = sub.add_parser("history", help="how the research got here: what you asked, what it got")
+    h.add_argument("rest", nargs="*", help="compare A B: two history entries (their ids) or git refs")
     h.add_argument("--node", default="")
     h.add_argument("--commits", type=int, default=0, help="also read the last N commits")
     ag = sub.add_parser("agents", help="a team of agents: plan, claim, publish, inbox, release (no argument: the team)")
@@ -243,12 +253,21 @@ def parser() -> argparse.ArgumentParser:
     c.add_argument("--ref", help="a commit to mark instead of the working tree")
     w = sub.add_parser("watch", help="a live local page of the views")
     w.add_argument("--base", default="checkpoint")
-    w.add_argument("--port", type=int, default=8766)
+    w.add_argument("--port", type=int, default=0, help="default: the first free from 8765, shared with system-diff")
     w.add_argument("--interval", type=float, default=2.0)
     w.add_argument("--quiet", action="store_true")
     r = sub.add_parser("readme", help="rewrite the README's research section")
     r.add_argument("--check", action="store_true")
     sub.add_parser("doctor", help="why research-diff is quiet, slow or wrong here")
+    sub.add_parser("hub", help="the address that lists every project of system-diff and research-diff")
+    ol = sub.add_parser("outline", help="a paper or notes file, section by section, its numbers checked")
+    ol.add_argument("path")
+    ol.add_argument("--summarize", action="store_true", help="and your LLM's summary of each section (kept)")
+    ol.add_argument("--quiet", action="store_true")
+    rv = sub.add_parser("review", help="your LLM reads the paper against itself and its results")
+    rv.add_argument("--patch", action="store_true", help="write contradictions between statements as a links patch")
+    rv.add_argument("--show", action="store_true", help="the last review, without asking again")
+    rv.add_argument("--quiet", action="store_true")
     st = sub.add_parser("setup", help="wire research-diff into an AI coding tool")
     st.add_argument("tool", choices=["claude"])
     st.add_argument("--scope", default="user", choices=["user", "project", "local"])
@@ -292,6 +311,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         return statusline.main(sys.stdin.read() if not sys.stdin.isatty() else "")
     if args.cmd == "history":
         from . import history
+        if args.rest[:1] == ["compare"] and len(args.rest) == 3:
+            c = history.compare_points(root, args.rest[1], args.rest[2])
+            print(c.diff["headline"] + "\n\n" + c.diff["plan"])
+            return 0
         if args.commits:
             history.commits(root, args.commits)
         print(history.text(history.load(root, args.node)))
@@ -300,6 +323,38 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _agents(args, root)
     if args.cmd == "objectives":
         return _objectives(args, root)
+    if args.cmd == "hub":
+        from . import hub
+        port = hub.find_hub()
+        print(f"http://localhost:{port}/projects/page" if port else
+              "no engine runs: start one with research-diff watch (or open Claude Code with the plugin)")
+        return 0
+    if args.cmd == "outline":
+        from . import paperview
+        g, bp, _cfg = compare.evidence_of(root, ".", args.config)
+        if args.summarize:
+            got = paperview.summarize(root, args.path, bp, g, wait=True)
+            if args.quiet:
+                return 0 if got["state"] == "done" else 1
+            if got["state"] != "done":
+                print(f"no summary: {got.get('why', got['state'])}")
+        print(paperview.as_text(paperview.outline(root, args.path, bp, g)))
+        return 0
+    if args.cmd == "review":
+        from . import review
+        r = review.current(root) if args.show else review.run(root, args.config)
+        if not args.quiet:
+            print(review.as_text(r))
+        if args.patch:
+            from . import suggest
+            bp = compare.read(root, ".", args.config)[0]
+            links = review.links_from(r, bp)
+            got = suggest.links(root, lambda _u: json.dumps({"links": links}), args.config) if links else None
+            if got and got["patch"]:
+                out = store_path(root, "review.patch")
+                out.write_text(got["patch"], encoding="utf-8", newline="\n")
+                print(f"\nlinks for the contradictions: read {out}, then `git apply {out}`")
+        return 0
     if args.cmd == "doctor":
         from . import doctor
         return doctor.main(root, args.config or "")

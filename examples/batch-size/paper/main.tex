@@ -1,16 +1,41 @@
+\begin{abstract}
+On datasets under 10k examples, batch 32 reaches 87.9\% accuracy against 84.2\% for batch 512,
+but the gap closes once the learning rate is scaled with the batch.
+\end{abstract}
+
 \section{Results}
+
+\begin{table}[t]
+  % of: E1
+  \centering
+  \begin{tabular}{lc}
+    Batch & Accuracy (\%) \\
+    32  & 87.4 \\
+    512 & 84.2 \\
+  \end{tabular}
+  \caption{Accuracy on the 8k split, learning rate fixed}
+  \label{tab:fixed-lr}
+\end{table}
 
 % C1: Small batches give better accuracy on small datasets
 % relies on: H1, R1
 % expects: E1.results acc.batch32 > 0.85
 % by: batch-agent
-On the 8k split, batch 32 reaches 87.4\% against 84.2\% for batch 512, in line with
+On the 8k split, batch 32 reaches 87.4\% against 84.2\% for batch 512 (Table~\ref{tab:fixed-lr}), in line with
 earlier work \cite{keskar2017large,masters2018revisiting}.
 
 % F1: Scaling the learning rate closes the gap
 % supported by: R2
 % by: lr-agent
-With the learning rate scaled linearly, batch 512 reaches 87.2\%.
+With the learning rate scaled linearly, batch 512 reaches 87.2\% (Figure~\ref{fig:scaled}).
+
+\begin{figure}[t]
+  % of: E2
+  \centering
+  \includegraphics[width=\linewidth]{figures/scaled-lr.pdf}
+  \caption{Accuracy against batch size with the learning rate scaled}
+  \label{fig:scaled}
+\end{figure}
 
 \section{Discussion}
 

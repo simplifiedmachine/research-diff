@@ -54,7 +54,9 @@ def _def_rx(kinds: Dict[str, str]) -> re.Pattern:
 
 def _ids(text: str, kinds: Dict[str, str]) -> List[str]:
     letters = "".join(sorted(kinds))
-    return re.findall(rf"\b([{letters}]\d+[a-z]?(?:\.results)?)\b", text)
+    found = re.findall(rf"\b([{letters}]\d+[a-z]?(?:\.results)?)\b|\b((?:tab|fig|tbl|table|figure)[:._-][\w:.\-]*\w)",
+                       text)
+    return [a or b for a, b in found]
 
 
 def _metrics(text: str) -> Dict[str, float]:
@@ -248,7 +250,10 @@ def extract(source, cfg: Dict[str, Any]) -> dict:
 
     for f, text in source.read_many(pick(cfg["notes"])).items():
         read_lines(m, text.splitlines(), f, def_rx)
+    from . import paper as paper_mod
+    papers: List[dict] = []
     for f, text in source.read_many(pick(cfg["paper"])).items():
+        papers.append(paper_mod.read(text, f, def_rx))
         lines = text.splitlines()
         if not f.endswith(".tex"):   # a paper written in Markdown: its headings are its sections
             for nid, first, _last in read_lines(m, lines, f, def_rx):
@@ -303,6 +308,29 @@ def extract(source, cfg: Dict[str, Any]) -> dict:
             r["metrics"].update({k: float(v) for k, v in (run.get("metrics") or {}).items()})
             m.links.add((rid, "of", run["experiment"]))
 
+    # The paper's tables and figures, what shows what, and every number the paper prints, checked.
+    floats = {fl["label"]: (p["path"], fl) for p in papers for fl in p["floats"] if fl["label"]}
+    for lab, (f, fl) in floats.items():
+        n = m.node(lab, fl["caption"][:140], f)
+        n.update(kind=fl["kind"], section=fl["section"], line=fl["line"])
+        if fl["graphics"]:
+            n["graphics"] = fl["graphics"]
+        for c in fl["comments"]:
+            a = ATTR_RX.match(c)
+            if a:
+                m.attr(lab, a.group(1), a.group(2), f)
+    for p in papers:
+        for para in p["paragraphs"]:
+            for ref in para["refs"]:
+                if ref in floats:
+                    for nid in para["markers"]:
+                        m.links.add((ref, "shows", nid))
+                elif re.match(r"(tab|fig|tbl|table|figure)[:._-]", ref):
+                    at = para.get("ref_at", {}).get(ref, para["line"])
+                    warnings.append(f"{p['path']}:{at} refers to {ref}, which the paper does not define")
+    checks, issues = paper_mod.check(papers, m.nodes, sorted(m.links))
+    warnings += [c["why"] for c in checks if c["sign"] == "-"] + [i["why"] for i in issues]
+
     nodes = m.nodes
     for src, rel, dst in sorted(m.links):
         if dst not in nodes:
@@ -317,7 +345,7 @@ def extract(source, cfg: Dict[str, Any]) -> dict:
         if n["kind"] == "hypothesis" and not by[("tests", nid)] and n["status"] in ("", "open"):
             warnings.append(f"{nid} is open and no experiment tests it")
         if n["kind"] == "claim":
-            basis = by[(nid, "relies on")] + by[("supports", nid)]
+            basis = by[(nid, "relies on")] + by[("supports", nid)] + by[("shows", nid)]
             if not basis:
                 warnings.append(f"{nid} relies on nothing: no result or hypothesis backs it")
             for b in by[(nid, "relies on")]:
@@ -331,7 +359,9 @@ def extract(source, cfg: Dict[str, Any]) -> dict:
         for e in n.get("expects", []):
             warnings += check_expect(nid, e, nodes)
     return {"ref": source.label, "nodes": {k: nodes[k] for k in sorted(nodes, key=_order)},
-            "links": [list(x) for x in sorted(m.links)], "warnings": sorted(set(warnings))}
+            "links": [list(x) for x in sorted(m.links)], "warnings": sorted(set(warnings)),
+            "checks": sorted(checks, key=lambda c: (c["to"], c["line"], c["from"])), "issues": issues,
+            "paper": [{"path": p["path"], "sections": p["sections"]} for p in papers]}
 
 
 def _order(nid: str) -> tuple:

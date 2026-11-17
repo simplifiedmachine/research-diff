@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "research-diff"
-version = "0.2.0"
+version = "0.3.0"
 description = "Maps your research from its notes, experiment configs, results and paper, draws which evidence supports and which contradicts each claim of the paper, and shows what each iteration (and each agent) changed. Built for doing research with AI coding agents."
 readme = "README.md"
 license = "MIT"

@@ -39,13 +39,14 @@ def touched(d: dict) -> List[str]:
 
 
 def entry(d: dict, after: dict, source: str, request: str = "", commit: str = "", message: str = "",
-          by: Optional[List[str]] = None, at: Optional[float] = None) -> dict:
+          by: Optional[List[str]] = None, at: Optional[float] = None, base: str = "", head: str = "") -> dict:
     ranked = items(d, after)
     key = f"{source}:{commit or ''}:{at or time.time()}:{d['headline']}"
     return {"id": hashlib.sha1(key.encode()).hexdigest()[:10], "at": at or round(time.time(), 1), "source": source,
             "request": request[:300], "commit": commit, "message": message, "headline": d["headline"],
             "items": [{k: x[k] for k in ("title", "why", "ids", "score")} for x in ranked[:8]], "ids": touched(d),
-            "by": by or []}
+            "by": by or [], "base": base, "head": head,
+            "sentence": (ranked[0]["title"] if ranked else d["headline"])}
 
 
 def record(root: Path, e: dict) -> None:
@@ -83,7 +84,8 @@ def commits(root: Path, n: int = 0) -> List[dict]:
             a = extract(GitSource(parent, root), cfg) if parent else {"ref": "", "nodes": {}, "links": [],
                                                                        "warnings": []}
             d = diff(a, b, cfg)
-            cache[sha] = entry(d, b, "commit", commit=sha[:9], message=msg, at=float(ct)) if d["changes"] else None
+            cache[sha] = entry(d, b, "commit", commit=sha[:9], message=msg, at=float(ct), base=parent,
+                               head=sha) if d["changes"] else None
         store.write(root, "commits.json", cache)
     return [e for e in cache.values() if e]
 
@@ -95,8 +97,22 @@ def text(entries: List[dict]) -> str:
         who = f" [{', '.join(e['by'])}]" if e.get("by") else ""
         head = f"You asked: “{e['request']}”" if e.get("request") else \
             f"Commit {e['commit']}: {e['message']}" if e.get("commit") else "A change no request explains"
-        out.append(f"{when}{who}  {head}\n    → it got: {e['headline']}")
+        out.append(f"{when}{who}  {head}\n    → {e.get('sentence') or e['headline']}   [{e['id']}]")
         for x in e["items"][:3]:
             out.append(f"      · {x['title']}" + (f" — {x['why']}" if x["why"] else ""))
     return "\n".join(out) or "No history yet: it is kept from the next turn that changes the research " \
                              "(or run: research-diff history --commits 50)."
+
+
+def compare_points(root: Path, a: str, b: str):
+    """What changed between two points of the research's life: history entries (by id: the state after each) or git
+    refs, or `.` (the working tree)."""
+    from . import compare as cmp
+    entries = {e["id"]: e for e in load(root, last=10_000)}
+
+    def point(x: str) -> str:
+        e = entries.get(x)
+        if e is None:
+            return x
+        return e.get("head") or (e.get("commit") and git("rev-parse", e["commit"], cwd=root).strip()) or x
+    return cmp.compare(root, point(a), point(b))

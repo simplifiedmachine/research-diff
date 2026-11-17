@@ -6,6 +6,8 @@ lights when picked. The same page is painted by the pane beside the chat in Clau
             consequence; your objectives; or, zoomed in on a node, its evidence chain and its history
   review    everything since your checkpoint, exactly
   evidence  every statement of the paper by section, with what supports it and what contradicts it
+  paper     the paper as written, section by section: its statements, tables and figures, every number it prints
+            checked against the results, a summary of each section by your LLM (✦), and the LLM's review
   agents    the team: what each agent owns, its verdicts, where it contradicts another agent, and the bus
   history   how the research got here: what you asked, what it got
 
@@ -23,7 +25,7 @@ from typing import Dict, List, Optional
 from . import activity, agents, compare, evidence, history, objectives, rank, store
 from .evidence import WORD
 
-VIEWS = ("now", "review", "evidence", "agents", "history")
+VIEWS = ("now", "review", "evidence", "paper", "agents", "history")
 STYLE = {"supported": "good", "contested": "attention", "contradicted": "removed bold", "unsupported": "muted",
          "holds": "muted"}
 ICON = {"supported": "✓", "contested": "◐", "contradicted": "✗", "unsupported": "○", "holds": "·"}
@@ -88,9 +90,12 @@ def look(root: Path, base: str = "checkpoint", config_path: Optional[str] = None
     owners = agents.owners(root)
     g = evidence.build(c.after, c.cfg, owners)
     objs = objectives.current(root)
-    return {"cmp": c, "map": c.after, "graph": g, "objectives": objs,
-            "worth": rank.worth_a_look(c.diff, c.after, 6, objs), "focus": activity.focus(root, c.after),
-            "request": activity.last_request(root), "root": root}
+    from . import chat, review
+    rv = review.current(root)
+    worth = sorted(review.worth(rv) + rank.worth_a_look(c.diff, c.after, 6, objs), key=lambda x: -x["score"])[:7]
+    return {"cmp": c, "map": c.after, "graph": g, "objectives": objs, "review": rv, "worth": worth,
+            "focus": activity.focus(root, c.after), "request": activity.last_request(root), "root": root,
+            "notes": chat.notes_by_node(root), "pointing": chat.pointing(root)}
 
 
 def _title(L: dict, nid: str, n: int = 60) -> str:
@@ -195,6 +200,11 @@ def view_zoom(L: dict, p: Page, nid: str) -> None:
                 icon, style = EFF[e["effective"]]
                 y = p.row((f"  {icon} ", style), (e["to"] + " ", "bold"), (e["why"], "muted"))
                 p.block(f"b:{e['to']}", y, {"zoom": e["to"]})
+    notes = L["notes"].get(nid, [])
+    if notes:
+        p.heading("Claude's notes")
+        for n in notes[-5:]:
+            p.row(("  ✎ ", "accent"), (n["text"], ""))
     past = history.load(L["root"], nid, 5)
     if past:
         p.heading("Its history", "h shows all")
@@ -240,6 +250,56 @@ def view_evidence(L: dict, p: Page) -> None:
             p.block(f"b:{s['id']}", y, {"zoom": s["id"]}, lights=ids)
     p.blank()
     p.row(("✓ supports  ◐ from a contested source  ○ ungrounded  ✗ contradicts (or a broken support)  · void", "muted"))
+
+
+def view_paper(L: dict, p: Page) -> None:
+    """The paper as written, section by section, beside its evidence."""
+    from . import paperview, review
+    bp, g = L["map"], L["graph"]
+    files = [x["path"] for x in bp.get("paper", [])]
+    if not files:
+        p.row(("No paper yet: research-diff reads the files the `paper` globs of research-diff.toml name "
+               "(LaTeX or Markdown).", "muted"))
+    for path in files:
+        o = paperview.outline(L["root"], path, bp, g)
+        s = o.get("summary") or {}
+        y = p.row(("▤ ", "accent"), (path, "bold"), ("  ✦ summarised" if s else "  (summarising: ✦ appears when ready)"
+                                                     if paperview.start(L["root"], path) else "", "muted"))
+        p.block(f"f:{path}", y, {"file": path})
+        if s.get("file"):
+            p.row(("  ✦ " + s["file"], "muted"))
+        for c in o["chunks"]:
+            bad = [n for n in c["numbers"] if n["sign"] == "-"]
+            ok = sum(1 for n in c["numbers"] if n["sign"] == "+")
+            p.heading("§ " + c["title"], f"lines {c['line']}-{c['end']}" + (f" · ✓ {ok} number{'s' if ok != 1 else ''} "
+                                                                            "match the results" if ok else ""))
+            cs = (s.get("sections") or {}).get(c["title"], {})
+            for k, label in (("says", "says"), ("claims", "claims"), ("watch", "watch")):
+                if cs.get(k):
+                    p.row((f"  ✦ {label}: ", "attention" if k == "watch" else "muted"), (cs[k], ""))
+            for st in c["statements"]:
+                v = st["verdict"] or "unsupported"
+                y = p.row(("  " + ICON.get(v, "·") + " ", STYLE.get(v, "muted"), f"b:{st['id']}"),
+                          (st["id"] + " ", "bold title", f"b:{st['id']}"), (st["title"][:90], ""))
+                p.block(f"b:{st['id']}", y, {"zoom": st["id"]})
+            for f in c["floats"]:
+                v = f["verdict"] or "holds"
+                y = p.row(("  ▦ " if f["kind"] == "table" else "  ◫ ", STYLE.get(v, "muted")), (f["label"] + " ", "bold"),
+                          (f["caption"][:80], "muted"), (f"  {WORD.get(v, '')}" if v not in ("holds",) else "", STYLE.get(v, "")))
+                p.block(f"b:{f['label']}", y, {"zoom": f["label"]})
+            for n in bad:
+                p.row(("  ✗ ", "removed"), (f"line {n['line']}: {n['why']}", "removed"))
+    rv = L["review"]
+    p.heading("Review", review.headline(rv) or "none yet: `research-diff review` asks your LLM to read the paper "
+                                                  "against itself and its results")
+    for f in rv.get("findings", []):
+        y = p.row(("  ✦ ", "removed" if f["kind"] == "contradiction" else "attention"),
+                  (f["kind"] + (f" ({' vs '.join(f['sections'])})" if f["sections"] else "") + ": ", "bold"),
+                  (f["why"], ""))
+        if f["ids"]:
+            p.block(f"v:{len(p.blocks)}", y, {"zoom": f["ids"][0]})
+        for q in f["quotes"][:2]:
+            p.row(("      “" + q + "”", "muted"))
 
 
 def view_agents(L: dict, p: Page) -> None:
@@ -307,10 +367,11 @@ def show(root: Path, view: str = "now", part: str = "", width: int = 100, base: 
          config_path: Optional[str] = None) -> dict:
     L = look(root, base, config_path)
     p = Page(view if view in VIEWS else "now", part, width)
-    {"now": view_now, "review": view_review, "evidence": view_evidence, "agents": view_agents,
+    {"now": view_now, "review": view_review, "evidence": view_evidence, "paper": view_paper, "agents": view_agents,
      "history": view_history}[p.view](L, p)
     data = p.data()
     data["web"] = web_url(root)
+    data["research"] = bool(L["map"]["nodes"])    # the pane opens by itself only where there is research
     data["send"] = take_outbox(root)
     activity.write_state(root, headline=L["cmp"].diff["headline"], evidence=L["graph"]["headline"],
                          worth=[w["title"] for w in L["worth"][:2]], focus=list(L["focus"] or []),
@@ -326,6 +387,8 @@ def take_outbox(root: Path) -> List[dict]:
         path.unlink()
     except OSError:
         return []
+    for x in got:   # what the session is about to be asked: its answer is kept for the page (chat.answered)
+        store.append(root, "delivered.jsonl", {"id": x.get("id"), "text": x.get("text", "")})
     return [{"id": str(x.get("id")), "text": str(x.get("text", ""))} for x in got if x.get("text")]
 
 

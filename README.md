@@ -16,18 +16,46 @@ contradicts itself and where one agent's work contradicts another's. In plain co
 
 ![Research map, generated from the notes, configs, results and paper](https://raw.githubusercontent.com/simplifiedmachine/research-diff/main/docs/research.svg)
 
-<details><summary>3 open warnings</summary>
+<details><summary>4 open warnings</summary>
 
 - C1 is contradicted by C2
 - C3 expects E2.results acc.batch512 < 0.85, but it is 0.872
 - H2 is open and no experiment tests it
+- §Abstract:2 says 87.9% (examples/batch-size/paper/main.tex:2), but E1.results acc.batch32 is 0.874
 
 </details>
 <!-- research-map:end -->
 
 The graph above is this repository's own example (`examples/batch-size`), regenerated from its files on every change:
-two agents, `batch-agent` and `lr-agent`; the Discussion's C2 contradicts the Results' C1, and C3 expects a number
-(batch 512 below 85%) that the experiment E2 does not give.
+two agents, `batch-agent` and `lr-agent`; the Discussion's C2 contradicts the Results' C1, C3 expects a number
+(batch 512 below 85%) that the experiment E2 does not give, and the abstract still says 87.9% where the results file
+says 0.874.
+
+## The paper, hand in hand with its results
+
+research-diff reads the paper as you write it (LaTeX or Markdown), not only its markers:
+
+- **Sections**: every `\section{}` (and the abstract) is a band of the graph and a chunk of the outline.
+- **Tables and figures** with a `\label{}` are evidence nodes (`tab:fixed-lr`). A `% of: E1` comment inside the
+  table says which experiment its numbers come from; without one, the result whose numbers it prints is found. A
+  claim whose paragraph `\ref`s a table or a figure is *shown* by it, and a `\ref` to a label that does not exist is
+  a warning.
+- **Every number the paper prints** (with a decimal point or a percent sign) is checked against the results the
+  claim, finding or table rests on, as printed (0.874 or 87.4%, at the decimals shown). A number that matches
+  supports it. A number close to a result but not equal to it is a **stale number**, a contradiction: *"C2 says
+  86.1%, but E1.results acc.b32 is 0.874"*. A paragraph with no marker, an abstract restating an old result, is
+  checked against every result and drawn as a red box of its section.
+- **Your LLM's summary of each section** (✦), made in the background the first time a file is opened and kept per
+  version of the file: what the section says, what it claims, and what to watch.
+- **The review** (`research-diff review`, or after a turn that changed the paper): your LLM reads the paper against
+  itself and its results, and finds where one section contradicts another, where the text and the numbers disagree,
+  and where a claim says more than its evidence. A finding is kept only if every quote in it is in the paper word for
+  word; `--patch` writes the contradictions between marked statements as `contradicted by:` links.
+
+```sh
+research-diff outline paper/main.tex --summarize   # the paper section by section, every number checked, summaries
+research-diff review                               # where the paper contradicts itself or its results
+```
 
 ## The evidence graph
 
@@ -105,20 +133,30 @@ no experiment, and when a link points at nothing.
 
 ## In Claude Code
 
-- **The pane**: `n` Now · `r` Review · `e` Evidence · `a` Agents · `h` History. Arrows pick a claim (its evidence
-  lights up), Enter zooms into its evidence chain, `b` goes back, `f` follows Claude. `/research-diff tui` opens the
-  same in a terminal of its own, and `research-diff watch` in a browser at `http://127.0.0.1:8766/`.
+- **The pane**: `n` Now · `r` Review · `e` Evidence · `p` Paper · `a` Agents · `h` History. Arrows pick a claim (its
+  evidence lights up), Enter zooms into its evidence chain, `b` goes back, `f` follows Claude. `/research-diff tui`
+  opens the same in a terminal of its own, and `research-diff watch` in a browser. With system-diff's plugin there too,
+  the two panes take turns beside the chat: opening one closes the other, and a new session opens on the one you
+  called last.
   - **Now**: where Claude (or which agent) is working, every statement worst first, and what is **worth a look** since
     you last looked, ranked by consequence (the paper contradicting itself first) and each with why it matters.
   - **Review**: everything since your checkpoint, exactly, with a picture of only what changed.
   - **Evidence**: every statement by paper section with what supports it and what contradicts it.
+  - **Paper**: the paper section by section, each with its statements, tables and figures, its numbers checked, your
+    LLM's summary and the review's findings. In the browser, a file opens as its outline beside its text, the stale
+    numbers' lines in red.
   - **Agents**: the team, what each agent owns, its verdicts, where it contradicts another agent, and the bus.
   - **History**: how the research got here: *"You asked: run the LR ablation → it got: R2, H1 supported → contested,
     1 new contradiction (C2 contradicts C1)"*, for the whole study or one claim.
 - **In the chat**: one line when an edit or a run moves a claim's verdict or makes a contradiction, and one at the end
   of the turn. The status line keeps the count of contradictions in view.
 - **Ask Claude** "does C3 still hold?" or "what contradicts the paper?": it answers from the MCP tools
-  (`research_evidence`, `explain`, `research_diff`, `research_map`), with the picture.
+  (`research_evidence`, `explain`, `paper_outline`, `review_paper`, `research_diff`, `research_map`), with the
+  picture. Asked from the web page's box, the answer shows on the page, and what Claude names (`point_to`) lights up
+  in its evidence graph; findings it keeps (`note`) stay on the node's card.
+- **One address for every project**: each web page joins system-diff's registry of running pages, on the first free
+  port from 8765, so with both tools running every page has a tab per project and per tool, and the first one lists
+  them all at `/projects/page` (`research-diff hub` prints it).
 - **Objectives**: research-diff learns what you keep asking for ("three seeds for every number", "don't claim beyond
   the 8k split"), shows it, keeps it in front of Claude and every agent, and marks changes that touch it. `x` clears
   one you disagree with; `research-diff objectives add TEXT` states one.
@@ -151,7 +189,8 @@ research-diff diff --base HEAD          # what your uncommitted iteration did (-
 research-diff sync                      # MLflow / W&B runs into research/runs.json
 research-diff checkpoint                # mark what you have understood
 research-diff diff                      # only what came after that (--base turn: this turn of your agent)
-research-diff history --commits 50      # the research's history, from git too
+research-diff history --commits 50      # the research's history, from git too: one plain sentence a step
+research-diff history compare A B       # what changed between two points (history entries or git refs)
 research-diff readme                    # keep the README's evidence graph and map current (--check in CI)
 research-diff doctor                    # why it is quiet, slow or wrong here
 ```

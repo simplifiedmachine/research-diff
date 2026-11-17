@@ -29,8 +29,11 @@ INSTRUCTIONS = (
     "supports or contradicts each claim and finding of the paper. After an iteration, call research_diff and tell the "
     "person what changed, from its plan only, contradictions first. research_evidence and explain say what backs or "
     "contradicts a statement. Record an experiment's outcome with log_result. For work across the study, plan_agents "
-    "splits it into agents; each agent claims its nodes, publishes what it changes and reads its inbox. Call "
-    "checkpoint only when the person says they have understood the current state."
+    "splits it into agents; each agent claims its nodes, publishes what it changes and reads its inbox. "
+    "paper_outline shows the paper section by section with every number checked against the results, and "
+    "review_paper where the paper contradicts itself: keep experiments, results and claims hand in hand. When "
+    "explaining, point_to the nodes you name. Call checkpoint only when the person says they have understood the "
+    "current state."
 )
 LOG = "research/log.md"
 
@@ -121,26 +124,26 @@ def tool_log(root: Path, experiment: str, metrics: Dict[str, float], title: str 
 def build() -> Server:
     server = Server("research-diff", instructions=INSTRUCTIONS)
 
-    @server.tool()
+    @_read_only(server)
     def research_map(at: str = ".") -> Dict[str, Any]:
         """Every question, hypothesis, experiment, result and claim, their statuses, metrics and links, the open
         warnings, and the picture's path. `at`: a commit, or "." for the working tree."""
         return tool_map(repo_root(), at)
 
-    @server.tool()
+    @_read_only(server)
     def research_diff(base: str = "checkpoint", head: str = ".") -> Dict[str, Any]:
         """What changed in the research from `base` ("checkpoint": what the person last marked as understood) to
         `head` ("." the working tree): one sentence, the exact plan, new warnings and the picture's path."""
         return tool_diff(repo_root(), base, head)
 
-    @server.tool()
+    @_read_only(server)
     def research_evidence(at: str = ".") -> Dict[str, Any]:
         """The evidence graph: every claim and finding of the paper with its verdict (supported, contested,
         contradicted, unsupported), what supports it and what contradicts it, where the paper contradicts itself and
         where one agent's work contradicts another's; the picture's and the interactive page's paths, and Mermaid."""
         return tool_evidence(repo_root(), at)
 
-    @server.tool()
+    @_read_only(server)
     def explain(node: str = "") -> Dict[str, Any]:
         """One node (empty: the one being worked on): what it is, its verdict, its evidence chain down to the numbers,
         what it backs or contradicts, and its history."""
@@ -203,7 +206,67 @@ def build() -> Server:
         sha = cmp.checkpoint(repo_root(), ref or None)
         return {"checkpoint": sha[:9]}
 
+    @_read_only(server)
+    def paper_outline(path: str = "") -> Dict[str, Any]:
+        """The paper (or a notes file; empty: the first paper file) section by section: each section's statements
+        with their verdicts, its tables and figures, every number it prints checked against the results (✓ matches,
+        ✗ stale, with why), and your LLM's summary of the section when one is kept (✦). Use it to check that the
+        experiments, results and claims of the paper go hand in hand, and before editing a section."""
+        from . import paperview
+        root = repo_root()
+        g, bp, _cfg = cmp.evidence_of(root)
+        files = paperview.research_files(bp)
+        path = path or (files[0] if files else "")
+        if path not in files:
+            return {"error": f"{path or 'no file'} is not a research file", "files": files}
+        o = paperview.outline(root, path, bp, g)
+        o.pop("lines", None)
+        for c in o["chunks"]:
+            c.pop("text", None)
+        return o
+
+    @server.tool()
+    def review_paper(run: bool = False) -> Dict[str, Any]:
+        """The LLM review of the paper against itself and its results: where one section contradicts another, where
+        text and numbers disagree, where a claim says more than its evidence; every quote checked against the paper.
+        `run`: review now (slow: it asks an LLM) instead of returning the last review. Fix what it finds in the paper
+        or record it as `contradicts:` markers; do not dismiss a finding without saying why."""
+        from . import review
+        root = repo_root()
+        return review.run(root) if run else (review.current(root) or {"findings": [], "why": "no review yet"})
+
+    @server.tool()
+    def point_to(ids: List[str], note: str = "") -> Dict[str, Any]:
+        """Point at nodes of the research (claims, findings, results, tables, `tab:main`) on the person's
+        research-diff web page: they light up in its evidence graph at once. Use it whenever you explain where the
+        research or the paper stands, as you name each node. At most 12; each call replaces the last."""
+        from . import chat
+        rec = chat.point(repo_root(), ids, note)
+        return {"pointing_at": rec["ids"], "shown": "the research-diff web page lights these now"}
+
+    @server.tool()
+    def note(node: str, text: str) -> Dict[str, Any]:
+        """Keep a short finding (at most ~300 characters) beside one node, shown on its card and when the person
+        zooms in on it: a weakness of a claim, a check still to run, a number to update in the paper."""
+        from . import chat
+        root = repo_root()
+        if node not in cmp.read(root, ".")[0]["nodes"]:
+            return {"error": f"{node} is not on the map"}
+        return chat.add_note(root, node, text)
+
     return server
+
+
+def _read_only(server):
+    """@server.tool(), marked as only reading (permission modes can run it without asking); plain with an MCP SDK too
+    old for annotations."""
+    try:
+        from mcp.types import ToolAnnotations
+        hints = ToolAnnotations.model_validate({"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True,
+                                                "openWorldHint": False})
+        return server.tool(annotations=hints)
+    except (ImportError, TypeError):
+        return server.tool()
 
 
 def main() -> None:
