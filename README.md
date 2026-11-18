@@ -155,11 +155,12 @@ Or the Studio, every project and a Claude Code session beside it in one window:
 system-diff app --open     # or research-diff app --open
 ```
 
-Open the address it prints (http://localhost:8765/). After system-diff's tabs come research-diff's: **Research**
-(what changed since your checkpoint, and one box per study when the repository holds several papers), **Evidence**,
-**Paper** (the paper section by section; a click opens it in the viewer, outlined by sections with your LLM's summary
-of each) and **Auto-research**. In Evidence, a click on a claim, a finding or a result in the notes opens its file at
-that paragraph. The page follows the files as they change, yours and Claude's. To mark what you have
+Open the address it prints (http://localhost:8765/). A research repository opens on research-diff's tabs, all about
+the research: **Now** (what changed since your checkpoint, and one box per study when the repository holds several
+papers), **Evidence**, **Paper** (the paper section by section; a click opens it in the viewer, outlined by sections
+with your LLM's summary of each), **Review** (what to fix, worst first), **Agents** (the research team and its
+workflow), **Auto-research** and **History**. system-diff's own tabs, about the software, wait behind **System ▸**. In
+Evidence and Review, a click on a claim, a finding or a result in the notes opens its file at that paragraph. The page follows the files as they change, yours and Claude's. To mark what you have
 seen, tell Claude "mark it as seen" (or run `research-diff checkpoint`): the next diff starts there.
 
 Check the setup any time with `research-diff doctor`.
@@ -209,18 +210,27 @@ python -m pip install -U "research-diff[mcp]"
 
 With system-diff (0.10 and later, which research-diff installs), research-diff runs **inside system-diff's own
 engine**, as its extension: one port, one web page and one pane in Claude Code, with system-diff's caching and
-diagrams. Its tabs sit after system-diff's own:
+diagrams. Its tabs are research's own, even where they share a name with system-diff's:
 
 | Tab | Key | What |
 |---|---|---|
-| Research | `s` | what changed in the research since your checkpoint, on the research map, and what is worth a look |
+| Now | `s` | what changed in the research since your checkpoint, on the research map, what Claude is on, and what is worth a look |
 | Evidence | `e` | the evidence graph as system-diff's diagram (green supports, red contradicts; hover a box for what supports and contradicts it, what to do about it and where it is; Enter or a click zooms into its evidence chain), the statements worst first |
-| Paper | `p` | the paper section by section, numbers checked, summaries and the review; each paper file opened beside its outline |
+| Paper | `p` | the paper section by section, numbers checked, summaries; each paper file opened beside its outline |
+| Review | `v` | what to fix before trusting the paper, worst first: the paper contradicting itself, numbers out of date, claims whose support no longer holds, agents contradicting each other, claims nothing backs; Claude's review of the paper; exactly what changed since your checkpoint |
+| Agents | `g` | the research team: who owns which claims, experiments and sections (lit on the evidence diagram), the workflow (auto-research's runs on it too, and ready-made research workflows to start from), what the agents told each other, the agents worth keeping |
 | Auto-research | `u` | servers, the campaign, its iterations and their logs |
+| History | `y` | how the research got here: each commit of the study's files (and each turn), newest first, and what it did to the claims |
+
+Where research is the repository's main work (a research-diff.toml at its root, or a LaTeX paper and no software
+project at the root), system-diff opens it on Now and folds its own tabs, the software system's, behind **System ▸**.
+`home = "system"` (or `"research"`) in research-diff.toml says it for good. With a system-diff older than 0.11, which
+cannot fold its tabs, research-diff's sit after system-diff's and are named Research, Problems, Team and Timeline
+instead, so that no two tabs share a name.
 
 **Several papers in one repository** (a folder per study: `1_tradeoff_reward_model_eval/`, `2_behavioral_field/`,
 …, git submodules included) are read study by study, each with its own ids (every paper has its C1), its own diff
-and evidence. The Research tab opens on one box per study; a click opens it, and every tab follows. Name them in
+and evidence. The Now tab opens on one box per study; a click opens it, and every tab follows. Name them in
 research-diff.toml (`studies = ["1_tradeoff_reward_model_eval", "2_behavioral_field"]`) or let research-diff find
 them: numbered top-level folders (`1_…`, `2_…`), else folders holding a `paper/` or `experiments/` folder or a LaTeX
 file; a study's files are its folder's and those under its name elsewhere (`results/<study>/…`). If the studies it

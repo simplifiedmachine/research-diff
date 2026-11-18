@@ -1,6 +1,6 @@
 {
   "name": "research-diff",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "A pane beside the chat: what supports and what contradicts each claim of your paper, what the last iteration changed in the research, and what each agent of a team is doing (research-diff)",
   "types": "./types/index.d.ts",
   "author": {

@@ -12,10 +12,13 @@ node it touched), "by" (the agents that edited)}. Kept in .git/research-diff/his
 from __future__ import annotations
 
 import hashlib
+import os
+import re
 import subprocess
+import threading
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from system_diff.sources import GitSource, git
 
@@ -88,6 +91,96 @@ def commits(root: Path, n: int = 0) -> List[dict]:
                                head=sha) if d["changes"] else None
         store.write(root, "commits.json", cache)
     return [e for e in cache.values() if e]
+
+
+RECENT = 30                 # the commits the History tab reads
+_FILLING: set = set()
+_FILL_LOCK = threading.Lock()
+EMPTY = {"ref": "", "nodes": {}, "links": [], "warnings": []}
+
+
+def _cache_name(sid: str) -> str:
+    return f"commits-{re.sub(r'[^A-Za-z0-9_.-]+', '_', sid)}.json" if sid else "commits.json"
+
+
+def commits_of(root: Path, scope: Optional[tuple] = None, sid: str = "", n: int = RECENT,
+               read: bool = False) -> Tuple[List[dict], int]:
+    """One study's history from git (the whole repository's without one): its last `n` commits that changed the
+    research, each against its parent, oldest first; and how many of them are not read yet. `read` reads those (each
+    commit's research once: a commit never changes, so they are kept, one file per study)."""
+    root = Path(root)
+    name = _cache_name(sid)
+    cache = store.read(root, name, {}) or {}
+    spec: List[str] = []
+    if scope:                          # its folder, and its own folder inside a shared one (results/<study>/...)
+        mine = scope[0].strip("/")
+        spec = ["--", f"{mine}/", f":(glob)*/{mine}/**"]
+    try:
+        log = git("log", f"-{n}", "--format=%H%x09%ct%x09%s", *spec, cwd=root).strip().splitlines()
+    except Exception:  # noqa: BLE001 - no commits yet, or git cannot say
+        log = []
+    log = [ln for ln in log if ln.count("\t") >= 2]
+    todo = [ln for ln in log if ln.split("\t", 1)[0] not in cache]
+    if read and todo:
+        memo: dict = {}
+
+        def research_at(sha: str) -> Tuple[dict, dict]:
+            if sha not in memo:
+                src = GitSource(sha, root)
+                cfg = config.load(src, root)
+                memo[sha] = (extract(src, cfg, scope), cfg)
+            return memo[sha]
+        for line in reversed(todo):     # oldest first: a commit's parent is often the one read just before
+            sha, ct, msg = line.split("\t", 2)
+            try:
+                parent = git("rev-parse", "--verify", "-q", f"{sha}^", cwd=root).strip()
+            except (OSError, subprocess.CalledProcessError):
+                parent = ""
+            try:
+                b, cfg = research_at(sha)
+                a = research_at(parent)[0] if parent else EMPTY
+                d = diff(a, b, cfg)
+                cache[sha] = entry(d, b, "commit", commit=sha[:9], message=msg, at=float(ct), base=parent,
+                                   head=sha) if d["changes"] else None
+            except Exception:  # noqa: BLE001 - a commit that cannot be read is left out, the others go on
+                cache[sha] = None
+            store.write(root, name, cache)   # one by one: the page shows them as they come
+        todo = []
+    listed = [ln.split("\t", 1)[0] for ln in reversed(log)]
+    return [cache[x] for x in listed if cache.get(x)], len(todo)
+
+
+def fill(root: Path, scope: Optional[tuple] = None, sid: str = "", n: int = RECENT) -> bool:
+    """Read the commits not read yet in the background (in the foreground under tests); True while it goes on."""
+    key = (str(Path(root).resolve()), sid)
+    if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("RESEARCH_DIFF_HOOK_SYNC"):
+        commits_of(root, scope, sid, n, read=True)
+        return False
+    with _FILL_LOCK:
+        if key in _FILLING:
+            return True
+        _FILLING.add(key)
+
+    def run() -> None:
+        try:
+            commits_of(root, scope, sid, n, read=True)
+        finally:
+            with _FILL_LOCK:
+                _FILLING.discard(key)
+    threading.Thread(target=run, name="research-diff history", daemon=True).start()
+    return True
+
+
+def for_study(root: Path, scope: Optional[tuple] = None, sid: str = "", n: int = RECENT) -> Tuple[List[dict], bool]:
+    """What the History tab lists, oldest first: the turns kept (the whole repository's, when it is one study) and the
+    study's last commits; True while commits are still being read."""
+    got, missing = commits_of(root, scope, sid, n)
+    reading = fill(root, scope, sid, n) if missing else False
+    if missing and not reading:                 # read just now, in the foreground
+        got, _ = commits_of(root, scope, sid, n)
+    turns = [] if sid else store.lines(root, FILE)
+    out = turns + [e for e in got if not any(t.get("commit") == e["commit"] for t in turns)]
+    return sorted(out, key=lambda e: e.get("at", 0)), reading
 
 
 def text(entries: List[dict]) -> str:

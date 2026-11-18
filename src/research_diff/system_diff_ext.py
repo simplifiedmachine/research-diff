@@ -1,12 +1,24 @@
 """research-diff inside system-diff: its tabs in system-diff's own engine, web page and pane (system-diff's extension
 contract, system_diff/extensions.py), so there is one engine, one port, one page, one pane and one cache.
 
-    Research      what changed in the research since your checkpoint, on the diagram, and what is worth a look
+    Now           what changed in the research since your checkpoint, on the diagram, what Claude is on, and what
+                  is worth a look (several studies: one box each, first)
     Evidence      the evidence graph on system-diff's diagram: claims and findings by verdict, what supports and what
-                  contradicts each; the interactive graph below it
-    Paper         the paper section by section: statements, tables and figures, numbers checked, summaries, review;
-                  each paper file opened beside it
+                  contradicts each
+    Paper         the paper section by section: statements, tables and figures, numbers checked, summaries
+    Review        what to fix before trusting the paper, worst first: the paper contradicting itself, claims their
+                  evidence or their own numbers contradict, agents contradicting each other, claims nothing backs;
+                  the paper's review by Claude; exactly what changed since the checkpoint
+    Agents        the research team: who owns which claims, experiments and sections, the workflow (auto-research's
+                  runs on it too), what they told each other, the agents worth keeping
     Auto-research the campaign's controls and state
+    History       how the research got here: each change (a turn, or a commit of the study's files) and what it did
+                  to the claims
+
+In a research repository system-diff opens on Now and folds its own tabs (the software system's Now, Review, Agents,
+Topics and History) behind one "System" tab (home()); there research-diff's tabs take those names, oriented to the
+research. With a system-diff that cannot fold its tabs, they keep names of their own (Research, Problems, Team,
+Timeline) so that no two tabs share a name.
 
 Fast: the research is read from the files system-diff's engine already holds in memory (ctx.live.source: no git, no
 snapshot), once per version of the working tree and of research-diff's own state, and the pages are cached by
@@ -18,13 +30,36 @@ import dataclasses
 import json
 import os
 import threading
+import time
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
+
+from .board import WORKFLOW_KINDS, WORKFLOW_TEMPLATES, step_log, workflow, workflow_action  # noqa: F401 (the hooks)
 
 NAME = "research"
-VIEWS = [("research", "Research", "s"), ("evidence", "Evidence", "e"), ("paper", "Paper", "p"),
-         ("auto", "Auto-research", "u")]
+
+
+def _folds() -> bool:
+    """Whether this system-diff opens a research repository on research-diff's tabs, its own behind one "System" tab
+    (0.11): then research-diff's tabs take the names of the ones they stand for there."""
+    try:
+        from system_diff import extensions
+        return callable(getattr(extensions, "home", None))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+SAME = _folds()
+# (view, tab, key, the tab of system-diff's it stands for in a research repository: where system-diff folds its own
+# tabs away it may give this one that tab's key and place; it reads the first three)
+VIEWS = [("research", "Now" if SAME else "Research", "s", "now"), ("evidence", "Evidence", "e"),
+         ("paper", "Paper", "p"), ("check", "Review" if SAME else "Problems", "v", "review"),
+         ("team", "Agents" if SAME else "Team", "g", "agents"), ("auto", "Auto-research", "u"),
+         ("timeline", "History" if SAME else "Timeline", "y", "history")]
+LABEL = {v[0]: v[1] for v in VIEWS}
 WATCH = ["research-diff/", "research-diff/auto/"]
+VERDICT_ORDER = {"contradicted": 0, "contested": 1, "unsupported": 2, "supported": 3, "holds": 4}
+NEEDS_EVIDENCE = ("claim", "finding")       # a hypothesis or a question with nothing behind it yet is not a problem
 
 STATUS = {"supported": "added", "contested": "changed", "contradicted": "removed", "unsupported": "same",
           "holds": "same"}
@@ -196,9 +231,12 @@ def _study_title(S: dict) -> str:
 
 # ── the evidence graph as system-diff's diagram model ──────────────────────────────────────────────────────────────
 
-def evidence_model(g: dict, focus: str = "") -> dict:
+def evidence_model(g: dict, focus: str = "", only: Optional[set] = None) -> dict:
     from . import evgraph
     keep = set(g["nodes"])
+    if only is not None:                           # some statements: those, and what backs or contradicts them
+        keep = {i for i in only if i in g["nodes"]}
+        keep |= {e["from"] for e in g["edges"] if e["to"] in keep}
     if focus and focus in g["nodes"]:              # zoomed in: the node, what it rests on and what rests on it
         keep, grew = {focus}, True
         up, down = {focus}, {focus}
@@ -423,9 +461,15 @@ def _web(ctx) -> dict:
     from . import autoresearch, graph, paperview, review
     S = state(ctx)
     g, part, view = S["graph"], S["rest"], ctx.view
+    if view == "check":
+        return _web_check(S)
+    if view == "team":
+        return _web_team(S)
+    if view == "timeline":
+        return _web_timeline(S, part)
     if view == "research" and S["studies"] and not ctx.part:       # several studies: one box each, first
         model = studies_model(ctx, S)
-        return {"title": "Research", "headline": f"{len(S['studies'])} studies in this repository: pick one",
+        return {"title": LABEL["research"], "headline": f"{len(S['studies'])} studies in this repository: pick one",
                 "diagram": {"svg": _svg(model, "Studies"), "title": "Studies", "aside": "click a study to open it",
                             "lights": {}, "details": {"b:" + n["id"]: {"title": n["title"], "headline": n["sub"],
                                                                        "how": [l["text"] for l in n["lines"]],
@@ -503,24 +547,278 @@ def _web(ctx) -> dict:
     c = S["cmp"]
     model = graph.diff_graph(c.diff, c.before, c.after, c.cfg) or graph.map_graph(c.after, c.cfg)
     model = {**model, "columns": [tuple(x) for x in model["columns"]]}
-    sections = [{"title": "Worth a look", "aside": f"since {c.base}", "kind": "notes", "items": _notes(
+    sections = [{"title": "Worth a look", "aside": f"since {c.base} · exactly what changed: {LABEL['check']}",
+                 "kind": "notes", "items": _notes(
         [{"sign": "⚑", "status": "removed" if w["score"] >= 80 else "changed" if w["score"] >= 45 else "same",
           "text": w["title"], "why": w["why"]} for w in S["worth"]] or [{"sign": "·", "status": "same",
-                                                                       "text": "Nothing new of consequence."}])},
-                {"title": "Exactly", "aside": "", "kind": "lines", "items": [
-                    {"text": ln, "style": {"+": "added", "~": "changed", "-": "removed"}.get(ln[:1], "muted")}
-                    for ln in c.diff["plan"].splitlines()]}]
+                                                                       "text": "Nothing new of consequence."}])}]
+    now = _right_now(S)
+    if now:
+        sections.insert(0, {"title": "Right now", "aside": "", "kind": "notes", "items": _notes(now)})
     if S["objectives"]:
         sections.append({"title": "Your objectives", "aside": "", "kind": "notes",
                          "items": _notes([{"sign": "◆", "status": "same", "text": o["text"]} for o in S["objectives"]])})
     svg = _svg(model, "Research diff" if c.diff["changes"] else "Research map", legend=False)
-    return {"title": "Research", "headline": c.diff["headline"],
+    return {"title": LABEL["research"], "headline": c.diff["headline"],
             "diagram": {"svg": svg, "title": "What changed in the research" if c.diff["changes"] else "The research",
                         "aside": f"since {c.base}", "lights": _lights(model), "details": {},
                         "enter": {"b:" + n["id"]: {"view": "evidence", "part": _part(S, n["id"])}
                                   for n in model["nodes"]},
                         "files": {}, "pick": ""},
             "sections": sections}
+
+
+def _right_now(S: dict) -> List[dict]:
+    """What Claude (or an agent) is on in the research, and what the person last asked."""
+    out = []
+    f = S.get("focus")
+    if f:
+        nid, how, who = f
+        title = S["graph"]["nodes"].get(nid, {}).get("title", "")
+        out.append({"sign": "●", "status": "changed", "text": f"{'Claude' if who == 'main' else who} is {how} {nid}",
+                    "why": title})
+    if S.get("request"):
+        out.append({"sign": "◆", "status": "same", "text": "You asked: " + S["request"][:200], "why": ""})
+    return out
+
+
+def _where_text(s: dict) -> str:
+    return f"{s['file']}:{s['line']}" if s.get("file") and s.get("line") else s.get("file") or ""
+
+
+def problems(S: dict) -> List[dict]:
+    """What in the research needs fixing, worst first: [{"rank", "sign", "status", "text", "why", "ids"}]. The paper
+    contradicting itself; claims their evidence, their own numbers or a broken support contradict; agents
+    contradicting each other; claims with evidence both ways; claims and findings nothing backs yet."""
+    g = S["graph"]
+    out: List[dict] = []
+    pairs = {(c["from"], c["to"]) for c in g["conflicts"]}
+    cross = {(c["from"], c["to"]): c["owners"] for c in g["cross_agent"]}
+    for c in g["conflicts"]:
+        who = cross.get((c["from"], c["to"]))
+        out.append({"rank": 0, "sign": "✗", "status": "removed", "ids": [c["to"], c["from"]],
+                    "text": f"The paper contradicts itself: {c['from']} against {c['to']}"
+                    + (f" ({who[0]}'s against {who[1]}'s)" if who else ""), "why": c["why"]})
+    for c in g["cross_agent"]:
+        if (c["from"], c["to"]) in pairs:
+            continue
+        out.append({"rank": 2, "sign": "⚑", "status": "changed", "ids": [c["to"], c["from"]],
+                    "text": f"Agents disagree: {c['owners'][0]}'s {c['from']} against {c['owners'][1]}'s {c['to']}",
+                    "why": c["why"]})
+    for s in sorted(g["statements"], key=lambda s: (s["file"], s["line"])):
+        name, where = f"{s['id']} {s['title']}".strip()[:100], _where_text(s)
+        at = f" · {where}" if where else ""
+        if s["verdict"] == "contradicted":
+            against = [x for x in s["against"] if (x["from"], s["id"]) not in pairs | set(cross)]
+            if not against:
+                continue                      # said above: the paper, or two agents, against itself
+            if all(x["kind"] == "number" for x in against):
+                text = f"{name}: a number in the paper is out of date"
+            elif all(x["effective"] == "?" for x in against):
+                text = f"{name}: what it relies on no longer holds"
+            else:
+                text = f"{name}: contradicted by its evidence"
+            out.append({"rank": 1, "sign": "✗", "status": "removed", "ids": [s["id"]] + [x["from"] for x in against],
+                        "text": text, "why": "; ".join(x["why"] for x in against[:2]) + at})
+        elif s["verdict"] == "contested":
+            out.append({"rank": 3, "sign": "◐", "status": "changed", "ids": [s["id"]],
+                        "text": f"{name}: evidence for it and against it",
+                        "why": "; ".join(x["why"] for x in s["against"][:2]) + at})
+        elif s["verdict"] == "unsupported" and s["kind"] in NEEDS_EVIDENCE:
+            out.append({"rank": 4, "sign": "○", "status": "same", "ids": [s["id"]],
+                        "text": f"{name}: nothing backs it yet",
+                        "why": "write what backs it under its marker (relies on: / supported by: / expects:)" + at})
+    return sorted(out, key=lambda x: x["rank"])
+
+
+def _problems_headline(found: List[dict]) -> str:
+    if not found:
+        return "Nothing to fix: every claim stands on its evidence and the paper agrees with itself"
+    n = {r: sum(1 for x in found if x["rank"] == r) for r in range(5)}
+    parts = [(n[0] + n[1], "contradiction", "contradictions"),
+             (n[2], "disagreement between agents", "disagreements between agents"),
+             (n[3], "claim with evidence both ways", "claims with evidence both ways"),
+             (n[4], "claim with nothing behind it", "claims with nothing behind them")]
+    return f"{len(found)} to fix: " + ", ".join(f"{k} {one if k == 1 else many}" for k, one, many in parts if k)
+
+
+def _web_check(S: dict) -> dict:
+    """Review: what to fix before trusting the paper, worst first, on the evidence diagram; the paper's review by
+    Claude; exactly what changed since the checkpoint."""
+    from . import review
+    g, c, rv = S["graph"], S["cmp"], S["review"]
+    found = problems(S)
+    sections = [{"title": "To fix", "aside": "worst first · hover a box above for what backs and contradicts it",
+                 "kind": "notes", "items": _notes(found) or _notes([{"sign": "✓", "status": "added",
+                                                                     "text": _problems_headline(found)}])}]
+    findings = rv.get("findings") or []
+    sections.append({"title": "The paper's review", "aside": review.headline(rv) or "by Claude, on request",
+                     "kind": "notes", "items": _notes(
+                         [{"sign": "✦", "status": "removed" if f["kind"] == "contradiction" else "changed",
+                           "text": f["why"], "why": " / ".join(f"“{q}”" for q in f["quotes"][:2])} for f in findings]
+                         or [{"sign": "·", "status": "same", "text": "No review yet: ask Claude to review the paper "
+                              "(review_paper): claims that contradict each other across sections, numbers that differ "
+                              "from the results, claims bigger than their evidence."}])})
+    sections.append({"title": f"Exactly, since {c.base}", "aside": "research-diff checkpoint marks it as seen",
+                     "kind": "lines", "items": [
+                         {"text": ln, "style": {"+": "added", "~": "changed", "-": "removed"}.get(ln[:1], "muted")}
+                         for ln in c.diff["plan"].splitlines()] or [{"text": "Nothing changed.", "style": "muted"}]})
+    ids = {i for x in found for i in x["ids"] if i in g["nodes"]}
+    diagram = {}
+    if ids:
+        model = evidence_model(g, only=ids)
+        diagram = _web_diagram(S, model, "evidence", "What needs fixing",
+                               "each with what backs and contradicts it · click one to open it", "")
+        diagram["pick"] = "b:" + found[0]["ids"][0] if found[0]["ids"][0] in g["nodes"] else ""
+    return {"title": LABEL["check"], "headline": _problems_headline(found), "diagram": diagram, "sections": sections}
+
+
+def _board(root: Path) -> Optional[dict]:
+    """system-diff's workflow board (the team's plan as it runs, auto-research's runs on it), when it has one."""
+    try:
+        from system_diff import pane as sdp
+    except Exception:  # noqa: BLE001
+        return None
+    f = getattr(sdp, "workflow_section", None) or getattr(sdp, "_workflow_section", None)
+    try:
+        return f(Path(root)) if f is not None else None
+    except Exception:  # noqa: BLE001 - the tab stands without it
+        return None
+
+
+def _ids_text(ids: List[str], most: int = 8) -> str:
+    return ", ".join(ids[:most]) + (f" and {len(ids) - most} more" if len(ids) > most else "")
+
+
+def _web_team(S: dict) -> dict:
+    """Agents: the research team, who owns which claims, experiments and sections (lit on the evidence diagram), the
+    workflow, what the agents told each other, where they contradict each other, the agents worth keeping."""
+    from . import agents
+    root, g = S["root"], S["graph"]
+    st = agents.state(root)
+    team = agents.team(root, g)
+    plan = st.get("plan") or {}
+    msgs = [m for m in st.get("messages") or [] if isinstance(m, dict) and m.get("at")]
+    now = time.time()
+    start = min([m["at"] for m in msgs] or [now - 3600])
+    span = max(60.0, now - start)
+    said: Dict[str, dict] = {}
+    for m in msgs:
+        said[m.get("from", "")] = m
+    lanes = []
+    for i, a in enumerate(team):
+        last = said.get(a["name"])
+        verdicts = "  ".join(f"{SIGN.get(k, '·')} {n}" for k, n in
+                             sorted(a["verdicts"].items(), key=lambda kv: VERDICT_ORDER.get(kv[0], 9)))
+        lanes.append({"name": a["name"], "colour": i, "area": _ids_text(a["owns"]) or "owns nothing yet",
+                      "live": bool(last and now - last["at"] < 120), "doing": str(last["text"])[:160] if last else "",
+                      "progress": verdicts, "unread": a["unread"],
+                      "marks": [{"pos": (m["at"] - start) / span,
+                                 "kind": "change" if str(m.get("text", "")).startswith("CONTRADICTION") else "message"}
+                                for m in msgs if m.get("from") == a["name"]][-40:],
+                      "blocks": ["b:" + x for x in a["owns"] if x in g["nodes"]]})
+    sections = []
+    board = _board(root)
+    if board:
+        sections.append(board)
+    sections.append({"title": "The research team", "kind": "lanes", "items": lanes,
+                     "aside": f"plan: {plan['task'][:140]}" if plan.get("task") else
+                     "who owns what: `by: <agent>` under a marker, or the team Claude plans (plan_agents)"})
+    if g["cross_agent"]:
+        sections.append({"title": "Agents contradicting each other", "aside": "", "kind": "notes", "items": _notes(
+            [{"sign": "✗", "status": "removed", "text": f"{c['owners'][0]}'s {c['from']} against {c['owners'][1]}'s "
+              f"{c['to']}", "why": c["why"]} for c in g["cross_agent"]])})
+    if msgs:
+        sections.append({"title": "What they told each other", "aside": "newest first, on the topics of the claims "
+                         "they touched", "kind": "notes", "items": _notes(
+                             [{"sign": "✉", "status": "removed" if str(m.get("text", "")).startswith("CONTRADICTION")
+                               else "same", "text": f"{m.get('from', '')}: {str(m.get('text', ''))[:200]}",
+                               "why": time.strftime("%H:%M", time.localtime(m["at"])) + f" · {m.get('topic', '')}"}
+                              for m in reversed(msgs[-15:])])})
+    lib, keep = agents.library(root), agents.worth_keeping(root)
+    if lib or keep:
+        sections.append({"title": "Saved agents", "aside": "reused by name in later plans and sessions",
+                         "kind": "notes", "items": _notes(
+                             [{"sign": "◆", "status": "added", "text": a["name"],
+                               "why": f"{a['description'][:100]} · {a['scope']} · planned {a['planned']}×, finished "
+                                      f"{a['finished']}×"} for a in lib]
+                             + [{"sign": "◇", "status": "changed", "text": k["name"], "why": "worth keeping: " + k["why"]}
+                                for k in keep])})
+    diagram = {}
+    if g["nodes"]:
+        model = evidence_model(g)
+        diagram = _web_diagram(S, model, "evidence", "Who works on what",
+                               "each box says whose it is · hover an agent below to light its part", "")
+        for a in team:
+            diagram["lights"]["ag:" + a["name"]] = ["b:" + x for x in a["owns"] if x in g["nodes"]]
+    head = (f"{_count(len(team), 'agent')}" + (f" · {plan['task'][:120]}" if plan.get("task") else "")) if team else \
+        "No research team yet: ask Claude to plan one (plan_agents), or write `by: <agent>` under the markers each " \
+        "agent owns"
+    return {"title": LABEL["team"], "headline": head, "diagram": diagram, "sections": sections}
+
+
+def _asked(e: dict) -> str:
+    return (f"You asked: “{e['request'][:120]}”" if e.get("request") else
+            f"{e['commit']}: {e['message'][:120]}" if e.get("commit") else "A change no request explains")
+
+
+def _entry_status(e: dict) -> str:
+    said = (e.get("headline", "") + " " + " ".join(i.get("title", "") for i in e.get("items", []))).lower()
+    return "removed" if "contradict" in said else "changed" if ("contested" in said or "→" in said) else "added"
+
+
+def _when(at: float) -> str:
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(at))
+
+
+def _web_timeline(S: dict, part: str) -> dict:
+    """History: how the research got here, each change (a turn, or a commit of the study's files) one box, newest
+    first, by what it did to the claims; one opened: what it got, and what it touched as it stands now."""
+    from . import history, studies
+    root, g = S["root"], S["graph"]
+    scope = studies.scope(S["studies"], S["study"]) if S["studies"] else None
+    entries, reading = history.for_study(root, scope, S["study"])
+    if part.startswith("#"):
+        e = next((x for x in entries if x["id"] == part[1:]), None)
+        if e is not None:
+            ids = {i for i in e.get("ids", []) if i in g["nodes"]}
+            diagram = _web_diagram(S, evidence_model(g, only=ids), "evidence", "What it touched, as it stands now",
+                                   "click one to open it", "") if ids else {}
+            sections = [{"title": "What it got", "aside": e["headline"], "kind": "notes", "items": _notes(
+                [{"sign": "·", "status": "same", "text": i["title"], "why": i["why"]} for i in e["items"]]
+                or [{"sign": "·", "status": "same", "text": e["headline"]}])}]
+            return {"title": LABEL["timeline"], "headline": f"{_when(e['at'])} · {_asked(e)}", "diagram": diagram,
+                    "sections": sections}
+    shown = list(reversed(entries))[:24]
+    now = time.time()
+
+    def column(at: float) -> str:
+        age = now - at
+        return "Today" if age < 86400 else "This week" if age < 7 * 86400 else "This month" if age < 31 * 86400 \
+            else "Earlier"
+    nodes = [{"id": "h" + e["id"], "col": column(e["at"]), "title": _asked(e)[:80], "type": "component",
+              "sub": _when(e["at"]) + (f" · by {', '.join(e['by'])}" if e.get("by") else ""),
+              "status": _entry_status(e),
+              "lines": [{"text": i["title"][:70], "status": "same"} for i in e["items"][:2]]} for e in shown]
+    columns = [(c, c) for c in ("Today", "This week", "This month", "Earlier") if any(n["col"] == c for n in nodes)]
+    diagram = {}
+    if nodes:
+        model = {"nodes": nodes, "edges": [], "columns": columns}
+        diagram = {"svg": _svg(model, "History", legend=False), "title": "How the research got here",
+                   "aside": "newest first · click a change to see what it did", "lights": {},
+                   "details": {"b:h" + e["id"]: {"title": _asked(e), "headline": e["headline"],
+                                                 "how": [f"{i['title']}" + (f": {i['why']}" if i["why"] else "")
+                                                         for i in e["items"][:4]],
+                                                 "insights": [], "inside": "Click to see what it did",
+                                                 "facts": [{"title": "It touched", "summary": _ids_text(e["ids"]),
+                                                            "items": []}] if e.get("ids") else []} for e in shown},
+                   "enter": {"b:h" + e["id"]: {"view": "timeline", "part": _part(S, "#" + e["id"])} for e in shown},
+                   "files": {}, "pick": ""}
+    head = (f"{_count(len(entries), 'change')} to the research" if entries else
+            "No history yet: each commit that changes the research shows here")
+    if reading:
+        head += " · reading the last commits…"
+    return {"title": LABEL["timeline"], "headline": head, "diagram": diagram, "sections": []}
 
 
 # ── the views: pane ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -571,9 +869,12 @@ def pane(ctx) -> dict:
             p.add(*[r[:2] for r in row]) if row else p.blank()
         return p.json(view="research", part=ctx.part or "")
     # the others: research-diff's own rows, from the state read once (zoomed in: the node's evidence chain)
-    view = {"research": "now", "paper": "paper", "auto": "auto"}.get(ctx.view, "now")
-    rp = rpage.Page("now" if part else view, part, width)
-    {"now": rpage.view_now, "paper": rpage.view_paper, "auto": rpage.view_auto}["now" if part else view](S, rp)
+    view = {"research": "now", "paper": "paper", "auto": "auto", "check": "review", "team": "agents",
+            "timeline": "history"}.get(ctx.view, "now")
+    zoom = bool(part) and view != "history"                    # History's part is an entry ("#id"), not a node
+    rp = rpage.Page("now" if zoom else view, part, width)
+    {"now": rpage.view_now, "paper": rpage.view_paper, "auto": rpage.view_auto, "review": rpage.view_review,
+     "agents": rpage.view_agents, "history": rpage.view_history}["now" if zoom else view](S, rp)
     data = rp.data()
     data["view"], data["part"] = ctx.view, ctx.part or ""
     return data
@@ -631,6 +932,41 @@ def applies(root) -> bool:
         return bool(git("ls-files", "-z", "--", "*.tex", cwd=root).strip("\0"))
     except Exception:  # noqa: BLE001
         return False
+
+
+MANIFESTS = ("pyproject.toml", "setup.py", "package.json", "go.mod", "Cargo.toml", "pom.xml", "build.gradle",
+             "build.gradle.kts", "Gemfile", "composer.json")
+
+
+def _settings(root: Path) -> dict:
+    """research-diff's settings at the repository's root (research-diff.toml, else [tool.research-diff]), read cheaply."""
+    import tomllib
+    for f, table in ((root / "research-diff.toml", ()), (root / "pyproject.toml", ("tool", "research-diff"))):
+        try:
+            d = tomllib.loads(f.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, ValueError):
+            continue
+        for k in table:
+            d = d.get(k) if isinstance(d, dict) else None
+        if isinstance(d, dict) and (d or not table):
+            return d
+    return {}
+
+
+def home(ctx) -> Optional[dict]:
+    """Where a repository whose main work is research opens: research-diff's Now, with system-diff's own tabs (the
+    software system's) folded behind one "System" tab. Research is the main work where a research-diff.toml sits at the
+    root, or where there is a LaTeX paper and no software project's manifest at the root; `home = "research"` or
+    `home = "system"` in research-diff.toml says it for good."""
+    root = Path(ctx.root)
+    said = str(_settings(root).get("home") or "").lower()
+    if said in ("research", "system"):
+        return {"view": "research", "system": "collapsed"} if said == "research" else None
+    if (root / "research-diff.toml").is_file():
+        return {"view": "research", "system": "collapsed"}
+    if any((root / m).is_file() for m in MANIFESTS):
+        return None
+    return {"view": "research", "system": "collapsed"} if applies(root) else None
 
 
 def _state_for_file(ctx, path: str) -> dict:

@@ -1,4 +1,4 @@
-"""research-diff inside system-diff's engine, page and pane (system_diff_ext.py): its four tabs drawn with
+"""research-diff inside system-diff's engine, page and pane (system_diff_ext.py): its tabs drawn with
 system-diff's own diagrams, its pages under /x/research/, read from the engine's files once per version. Skipped where
 the system-diff installed has no extensions (before 0.10)."""
 from __future__ import annotations
@@ -39,8 +39,13 @@ def engine_live(root: Path, identity: str = "v1"):
 
 def test_it_is_found_as_system_diffs_extension(monkeypatch):
     monkeypatch.setattr(extensions, "_LOADED", [x])
-    assert [v[0] for v in extensions.views()] == ["research", "evidence", "paper", "auto"]
-    assert extensions.owner("evidence") is x
+    assert [v[0] for v in extensions.views()] == ["research", "evidence", "paper", "check", "team", "auto", "timeline"]
+    assert extensions.owner("evidence") is x and extensions.owner("check") is x
+    labels = [v[1] for v in extensions.views()]
+    if callable(getattr(extensions, "home", None)):      # system-diff folds its own tabs: the research ones take names
+        assert labels == ["Now", "Evidence", "Paper", "Review", "Agents", "Auto-research", "History"]
+    else:                                                # beside system-diff's own: no two tabs share a name
+        assert labels == ["Research", "Evidence", "Paper", "Problems", "Team", "Auto-research", "Timeline"]
 
 
 def test_the_evidence_tab_is_system_diffs_diagram_in_the_evidence_graphs_words(study):
@@ -187,3 +192,98 @@ def test_the_person_can_read_the_repository_as_one_study_and_split_it_again(repo
     assert len(x.state(ctx(repo, "evidence", "", live=live))["studies"]) == 2
     files(repo, {"research-diff.toml": "studies = false\n"})                     # or for good, in the config
     assert x.state(ctx(repo, "evidence", "", live=engine_live(repo, "v2")))["studies"] == []
+
+
+def test_a_research_repository_opens_on_research_with_the_system_tabs_folded(repo, files):
+    assert x.home(ctx(repo, "")) == {"view": "research", "system": "collapsed"}     # a LaTeX paper, no software
+    files(repo, {"pyproject.toml": "[project]\nname = 'app'\n"})                   # a software project with a paper
+    assert x.home(ctx(repo, "")) is None
+    files(repo, {"research-diff.toml": 'paper = ["paper/*.tex"]\n'})               # research-diff set up at the root
+    assert x.home(ctx(repo, ""))["view"] == "research"
+    files(repo, {"research-diff.toml": 'home = "system"\n'})                       # the person says otherwise
+    assert x.home(ctx(repo, "")) is None
+
+
+def test_review_lists_what_to_fix_worst_first_on_the_evidence_diagram(study):
+    page = x.web(ctx(study, "check"))
+    assert page["title"] == x.LABEL["check"] and page["headline"].split(":")[0].endswith("to fix")
+    todo = next(s for s in page["sections"] if s["title"] == "To fix")["items"]
+    assert todo[0]["text"] == "The paper contradicts itself: C2 against C1 (lr-agent's against batch-agent's)"
+    c1 = [i for i in todo if i["text"].startswith("C1 ")]
+    assert len(c1) == 1 and c1[0]["text"].endswith("what it relies on no longer holds")   # H1, which R2 contradicts
+    assert "C2 contradicts C1" not in c1[0]["why"]                                  # said once, above
+    assert any(i["text"].endswith("a number in the paper is out of date") for i in todo)   # 88.9% vs 0.874
+    assert todo[-1]["text"].startswith("C2 ") and todo[-1]["text"].endswith("nothing backs it yet")
+    assert {"b:C1", "b:C2"} <= set(page["diagram"]["files"])                       # each opens where it is written
+    assert page["diagram"]["svg"].startswith("<svg")
+    titles = [s["title"] for s in page["sections"]]
+    assert "The paper's review" in titles and any(t.startswith("Exactly, since") for t in titles)
+    now = x.web(ctx(study, "research"))                                             # Now keeps what is worth a look
+    assert not any(s["title"].startswith("Exactly") for s in now["sections"])
+
+
+def test_agents_shows_who_owns_what_and_lights_it(study):
+    page = x.web(ctx(study, "team"))
+    team = next(s for s in page["sections"] if s["title"] == "The research team")
+    assert team["kind"] == "lanes"
+    lanes = {l["name"]: l for l in team["items"]}
+    assert set(lanes) == {"batch-agent", "lr-agent"}
+    assert "b:C1" in lanes["batch-agent"]["blocks"] and "b:C2" in lanes["lr-agent"]["blocks"]
+    assert page["diagram"]["lights"]["ag:batch-agent"] == lanes["batch-agent"]["blocks"]
+    assert any(s["title"] == "Agents contradicting each other" for s in page["sections"])   # C2 (lr) against C1 (batch)
+    assert page["headline"].startswith("2 agents")
+
+
+def test_history_shows_each_commit_of_the_research_and_what_it_did(study, files):
+    from conftest import git
+    git(study, "add", "-A")
+    git(study, "commit", "-q", "-m", "results and the second claim")
+    page = x.web(ctx(study, "timeline"))
+    boxes = [k for k in page["diagram"]["enter"]]
+    assert len(boxes) == 2 and page["headline"].startswith("2 changes")             # both commits, newest first
+    newest = page["diagram"]["details"][boxes[0]]
+    assert "results and the second claim" in newest["title"]
+    opened = x.web(ctx(study, "timeline", page["diagram"]["enter"][boxes[0]]["part"]))
+    assert opened["headline"].endswith("results and the second claim")
+    assert any(s["title"] == "What it got" for s in opened["sections"])
+    assert "b:C2" in opened["diagram"]["files"]                                     # what it touched, as it stands
+
+
+def test_auto_research_runs_are_steps_on_system_diffs_workflow_board(repo):
+    from research_diff import autoresearch
+    c = {"id": "c1", "goal": "acc above 0.9", "state": "running", "max_iterations": 3, "servers": ["local"],
+         "created": 1.0, "events": [{"at": 2.0, "text": "j001 E1 launched on local GPU 0"}],
+         "iterations": [{"n": 1, "reason": "the baseline", "jobs": ["j001", "j002"], "state": "analysed",
+                         "analysis": "lr too high", "started": 1.0, "ended": 5.0},
+                        {"n": 2, "reason": "lower lr", "jobs": ["j003"], "state": "running", "started": 6.0}],
+         "jobs": {"j001": {"id": "j001", "experiment": "E1", "command": "python train.py", "state": "done",
+                           "server": "local", "gpus": [0], "tail": "epoch 1\nacc 0.84", "results": ["out/e1.json"]},
+                  "j002": {"id": "j002", "experiment": "E2", "command": "python train.py --b 512", "state": "failed",
+                           "server": "local", "gpus": [1], "tail": "", "why": "exited 1", "results": []},
+                  "j003": {"id": "j003", "experiment": "E1", "command": "python train.py --lr 0.01",
+                           "state": "running", "server": "local", "gpus": [0], "tail": "epoch 1", "results": []}}}
+    autoresearch._save(repo, c)
+    got = x.workflow(ctx(repo, ""))
+    steps = {s["id"]: s for s in got["steps"]}
+    assert set(steps) == {"auto-j001", "auto-j002", "auto-analyse-1", "auto-j003", "auto-analyse-2"}
+    assert (steps["auto-j001"]["state"], steps["auto-j002"]["state"], steps["auto-j003"]["state"]) == \
+        ("done", "failed", "running")
+    assert steps["auto-analyse-1"]["state"] == "done" and steps["auto-analyse-2"]["state"] == ""
+    waits = {(w["from"], w["to"]) for w in got["waits"]}
+    assert {("auto-j001", "auto-analyse-1"), ("auto-analyse-1", "auto-j003"), ("auto-j003", "auto-analyse-2")} <= waits
+    assert steps["auto-j003"]["actions"] == ["pause", "stop"] and steps["auto-j001"]["actions"] == []
+    log = x.step_log(ctx(repo, ""), "auto-j001")
+    assert [e["text"] for e in log["entries"]][:2] == ["j001 E1 launched on local GPU 0", "python train.py"]
+    assert "acc 0.84" in [e["text"] for e in log["entries"]]
+    assert x.workflow_action(ctx(repo, ""), "auto-j003", "pause")["ok"]
+    assert autoresearch.campaign(repo)["state"] == "paused"
+    assert x.workflow(ctx(repo, ""))["steps"][-1]["actions"] == []                  # its analysis waits: no action
+    assert not x.workflow_action(ctx(repo, ""), "auto-j003", "retry")["ok"]
+    assert {k["kind"] for k in x.WORKFLOW_KINDS} >= {"experiment-runner", "contradiction-reviewer"}
+    assert x.WORKFLOW_TEMPLATES[0]["agents"][1]["waits_for"] == ["experiment-runner"]
+
+
+def test_the_pane_draws_the_research_tabs_too(study):
+    for view in ("check", "team", "timeline"):
+        got = x.pane(ctx(study, view))
+        assert got["view"] == view and got["rows"], view
