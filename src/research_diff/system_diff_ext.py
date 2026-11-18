@@ -2,7 +2,7 @@
 contract, system_diff/extensions.py), so there is one engine, one port, one page, one pane and one cache.
 
     Now           what changed in the research since your checkpoint, on the diagram, what Claude is on, and what
-                  is worth a look (several studies: one box each, first)
+                  is worth a look
     Evidence      the evidence graph on system-diff's diagram: claims and findings by verdict, what supports and what
                   contradicts each
     Paper         the paper section by section: statements, tables and figures, numbers checked, summaries
@@ -20,9 +20,15 @@ Topics and History) behind one "System" tab (home()); there research-diff's tabs
 research. With a system-diff that cannot fold its tabs, they keep names of their own (Research, Problems, Team,
 Timeline) so that no two tabs share a name.
 
+Several studies (a folder per paper): one at a time, the one the page's part names ("<study>@"), else the one
+system-diff's own list of projects has picked (it stays picked from tab to tab), else the first. The studies are listed
+on the left by research-diff only where system-diff's list does not already offer them: one list.
+
 Fast: the research is read from the files system-diff's engine already holds in memory (ctx.live.source: no git, no
 snapshot), once per version of the working tree and of research-diff's own state, and the pages are cached by
-system-diff per engine version. The base of the diff (your checkpoint's commit) is read once per commit.
+system-diff per engine version. The base of the diff (your checkpoint's commit, its submodules' files at the commits
+it records) is read once per commit. Scripts and configs that hold no research are remembered by content and not read
+again (scan.py): a results folder of logs costs one read, not one per look.
 """
 from __future__ import annotations
 
@@ -78,16 +84,19 @@ _BASE: Dict[tuple, dict] = {}
 
 # ── the research, read once per version ────────────────────────────────────────────────────────────────────────────
 
+# research-diff's files that the research's state is not made of: their writes must not read the research again
+NOT_STATE = ("summaries", "history.jsonl", "agent-usage.json", "notices.jsonl", "auto", "suggest.patch")
+
+
 def _stamp(root: Path) -> tuple:
     from . import compare, store
     h = store.home(root)
-    out = []
-    for d in (h, h / "auto"):
-        try:
-            out.append(tuple(sorted((e.name, e.stat().st_mtime_ns) for e in os.scandir(d))))
-        except OSError:
-            out.append(())
-    return tuple(out) + (compare.checkpoint_sha(root),)
+    try:
+        got = tuple(sorted((e.name, e.stat().st_mtime_ns) for e in os.scandir(h)
+                           if e.name not in NOT_STATE and not e.name.startswith(("commits", ".", "hook"))))
+    except OSError:
+        got = ()
+    return got + (compare.checkpoint_sha(root),)
 
 
 class _Merged:
@@ -95,17 +104,12 @@ class _Merged:
     as one entry: its own files are read from disk here)."""
     label = "working tree"
 
-    def __init__(self, src, root: Path):
+    def __init__(self, src, root: Path, ident=None):
         self._src, self.root = src, Path(root)
+        self.blobs = getattr(src, "blobs", {}) or {}
         extra: List[str] = []
         if (self.root / ".gitmodules").is_file():
-            from system_diff.sources import git
-            try:
-                listed = git("ls-files", "-z", "-c", "--recurse-submodules", cwd=self.root).split("\0")
-            except Exception:  # noqa: BLE001
-                listed = []
-            known = set(src.files)
-            extra = [f for f in listed if f and f not in known]
+            extra = _submodule_files(self.root, src, ident)
         self._extra = set(extra)
         self.files = sorted(set(src.files) | self._extra)
 
@@ -124,6 +128,28 @@ class _Merged:
         return out
 
 
+_SUBS: Dict[str, tuple] = {}
+SUBS_FOR = 20.0          # seconds a submodule listing is kept for one version of the outer working tree
+
+
+def _submodule_files(root: Path, src, ident) -> List[str]:
+    """The files inside the repository's submodules (the engine lists a submodule as one entry), listed by one git
+    command, kept for the same version of the working tree for a little while (a submodule's own edits show then)."""
+    key = str(root)
+    got = _SUBS.get(key)
+    if got is not None and got[0] == ident and ident is not None and time.time() - got[1] < SUBS_FOR:
+        return got[2]
+    from system_diff.sources import git
+    try:
+        listed = git("ls-files", "-z", "-c", "--recurse-submodules", cwd=root).split("\0")
+    except Exception:  # noqa: BLE001
+        listed = []
+    known = set(src.files)
+    extra = [f for f in listed if f and f not in known]
+    _SUBS[key] = (ident, time.time(), extra)
+    return extra
+
+
 def _source(ctx):
     """(source of the working tree, a key that is the same for the same files, root)."""
     from . import compare
@@ -131,7 +157,7 @@ def _source(ctx):
     live = getattr(ctx, "live", None)
     src = getattr(live, "source", None) if live is not None else None
     if src is not None:
-        merged = _Merged(src, root)
+        merged = _Merged(src, root, getattr(live, "identity", None))
         return merged, (getattr(live, "identity", "") or None, len(merged._extra)), root
     work = compare.WorkSource(root)
     return work, None, root
@@ -144,21 +170,69 @@ def state(ctx) -> dict:
     src, ident, root = _source(ctx)
     from . import config
     cfg = config.load(src, root)
-    found = studies.detect(src.files, cfg)
+    every = _detect(src, ident, cfg, root)
+    found = every
     sid, rest = studies.split(ctx.part or "")
     if sid in (ONE, SPLIT):            # the person's switch, in the studies list: remembered for the repository
         studies.set_split(root, sid == SPLIT)
         sid = ""
-    split_off = bool(found) and not studies.split_on(root)
+    listed = _system_projects(root)
+    split_off = bool(found) and (not studies.split_on(root) or listed == "one")
     if split_off:
         found = []
-    if found and sid not in {x["id"] for x in found}:
-        sid = found[0]["id"]                 # the first study, until one is picked
+    ids = {x["id"] for x in found}
+    if found and sid not in ids:       # system-diff's picked project (a study's folder, or inside one), else the first
+        sid = studies.at(found, _scope(ctx)) or found[0]["id"]
     if not found:
         sid = ""
+    own = bool(found) and not (isinstance(listed, list) and all(x["path"].strip("/") in listed for x in found))
     out = _study_state(ctx, src, ident, root, cfg, found, sid)
     return {**out, "studies": found, "study": sid, "rest": rest, "split_off": split_off,
-            "could_split": len(studies.detect(src.files, cfg))}
+            "could_split": len(every), "own_list": own or split_off}
+
+
+_DETECTED: Dict[tuple, list] = {}
+
+
+def _detect(src, ident, cfg: dict, root: Path) -> List[dict]:
+    from . import studies
+    key = (str(root), ident, json.dumps(cfg.get("studies"), default=str), json.dumps(cfg.get("paper"), default=str))
+    if ident is not None and key in _DETECTED:
+        return _DETECTED[key]
+    got = studies.detect(src.files, cfg)
+    if ident is not None:
+        _DETECTED[key] = got
+        while len(_DETECTED) > 8:
+            _DETECTED.pop(next(iter(_DETECTED)))
+    return got
+
+
+def _scope(ctx) -> str:
+    """The project system-diff's own list has picked (a folder of the repository), "" for the whole repository. It
+    stays picked from tab to tab (the page's part does not)."""
+    got = getattr(ctx, "scope", None)
+    if got is None:
+        try:
+            from system_diff import pane as sdp
+            got = getattr(sdp, "SCOPE", "")
+        except Exception:  # noqa: BLE001
+            got = ""
+    return str(got or "")
+
+
+def _system_projects(root: Path):
+    """The folders system-diff's own list offers ("one" while the person shows the repository as one project there),
+    or None: a system-diff without that list."""
+    try:
+        from system_diff import projects as sdp
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        if sdp.as_one(Path(root)):
+            return "one"
+        return [str(p.get("path", "")).strip("/") for p in sdp.listed(Path(root))]
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _study_state(ctx, src, ident, root: Path, cfg: dict, found: List[dict], sid: str) -> dict:
@@ -177,9 +251,8 @@ def _study_state(ctx, src, ident, root: Path, cfg: dict, found: List[dict], sid:
     bkey = (str(root), sha, sid, json.dumps(cfg, sort_keys=True, default=str))
     with _LOCK:
         before = _BASE.get(bkey)
-    if before is None:
-        from system_diff.sources import GitSource
-        before = extract(GitSource(sha, root), cfg, sc)
+    if before is None:                 # the checkpoint's commit, with its submodules' papers at the commits it records
+        before = extract(compare.CommitTree(sha, root), cfg, sc)
         before["ref"] = label
         with _LOCK:
             _BASE[bkey] = before
@@ -217,7 +290,7 @@ def _nav(S: dict, view: str) -> List[dict]:
         return [{"id": SPLIT, "title": f"Split into {S['could_split']} studies", "sub": "found from the folders",
                  "active": False, "target": {"view": view, "part": SPLIT + "@"}}]
     items = [{"id": x["id"], "title": x["title"], "sub": x["path"], "active": x["id"] == S["study"],
-              "target": {"view": view, "part": x["id"] + "@"}} for x in S.get("studies", [])]
+              "target": {"view": view, "part": x["id"] + "@", "scope": x["path"]}} for x in S.get("studies", [])]
     if items:
         items.append({"id": ONE, "title": "Show as one study", "sub": "if these are not separate works",
                       "active": False, "target": {"view": view, "part": ONE + "@"}})
@@ -449,11 +522,12 @@ def studies_model(ctx, S: dict) -> dict:
 def web(ctx) -> dict:
     out = _web(ctx)
     S = state(ctx)
-    if S["studies"] or S.get("split_off"):
+    if (S["studies"] or S.get("split_off")) and S.get("own_list", True):
         out["nav"] = _nav(S, ctx.view)
         out["nav_title"] = "Studies"
-        name = _study_title(S)
-        out["title"] = f"{out.get('title', '')} · {name}" if name and ctx.part else out.get("title", "")
+    name = _study_title(S)                           # which study this is, always: the list may be system-diff's
+    if name:
+        out["title"] = f"{out.get('title', '')} · {name}"
     return out
 
 
@@ -467,17 +541,6 @@ def _web(ctx) -> dict:
         return _web_team(S)
     if view == "timeline":
         return _web_timeline(S, part)
-    if view == "research" and S["studies"] and not ctx.part:       # several studies: one box each, first
-        model = studies_model(ctx, S)
-        return {"title": LABEL["research"], "headline": f"{len(S['studies'])} studies in this repository: pick one",
-                "diagram": {"svg": _svg(model, "Studies"), "title": "Studies", "aside": "click a study to open it",
-                            "lights": {}, "details": {"b:" + n["id"]: {"title": n["title"], "headline": n["sub"],
-                                                                       "how": [l["text"] for l in n["lines"]],
-                                                                       "insights": [], "facts": []}
-                                                      for n in model["nodes"]},
-                            "enter": {"b:" + n["id"]: {"view": "research", "part": n["id"] + "@"}
-                                      for n in model["nodes"]}, "files": {}, "pick": ""},
-                "sections": []}
     if view == "evidence":
         model = evidence_model(g, part)
         sections = []
@@ -932,6 +995,14 @@ def applies(root) -> bool:
         return bool(git("ls-files", "-z", "--", "*.tex", cwd=root).strip("\0"))
     except Exception:  # noqa: BLE001
         return False
+
+
+def projects(ctx) -> List[dict]:
+    """The repository's studies as projects for system-diff's own list (where it asks: one list on the left, its pick
+    the study on every tab): [{"path", "title", "why"}]. None while the person reads the repository as one study."""
+    S = state(dataclasses.replace(ctx, part=""))
+    found = [] if S.get("split_off") else S.get("studies") or []
+    return [{"path": x["path"], "title": x["title"], "why": "a paper and its experiments of its own"} for x in found]
 
 
 MANIFESTS = ("pyproject.toml", "setup.py", "package.json", "go.mod", "Cargo.toml", "pom.xml", "build.gradle",

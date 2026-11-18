@@ -58,3 +58,19 @@ def deliver(root: Path, text: str) -> bool:
         return True
     except Exception:  # noqa: BLE001
         return False
+
+
+def opens_on_view() -> bool:
+    """Whether `system-diff watch` takes --view (0.11.0.dev12 and later): research-diff watch opens on research's Now."""
+    import re
+    try:
+        import system_diff
+        v = str(system_diff.__version__)
+    except Exception:  # noqa: BLE001
+        return False
+    m = re.match(r"^(\d+)\.(\d+)\.(\d+)(?:\.dev(\d+))?", v)
+    if not m:
+        return False
+    release = tuple(int(x) for x in m.groups()[:3])
+    dev = m.group(4)
+    return release > (0, 11, 0) or (release == (0, 11, 0) and (dev is None or int(dev) >= 12))

@@ -97,6 +97,51 @@ class WorkSource:
         return {p: self.read(p) for p in paths}
 
 
+class CommitTree:
+    """A commit of the repository with its git submodules' files at the commits it records (a GitSource lists a
+    submodule as one entry: a paper kept in a submodule would be missing from every commit). Like GitSource: files,
+    blobs, label, root, read_many, read."""
+
+    def __init__(self, ref: str, root: Path):
+        self.root = Path(root)
+        top = GitSource(ref, self.root)
+        self.label, self.ref = top.label, ref
+        self._parts = [("", top)]
+        for path, commit in sorted((getattr(top, "gitlinks", None) or {}).items()):
+            sub = self.root / path
+            if not (sub / ".git").exists():
+                continue                       # not checked out here: nothing to read it from
+            try:
+                self._parts.append((path.strip("/") + "/", GitSource(commit, sub)))
+            except Exception:  # noqa: BLE001 - that commit is not in the submodule's clone: left out
+                continue
+        links = set(getattr(top, "gitlinks", None) or {})
+        self.files = sorted([f for f in top.files if f not in links] +
+                            [pre + f for pre, src in self._parts[1:] for f in src.files])
+        self.blobs = {pre + f: b for pre, src in self._parts for f, b in (getattr(src, "blobs", None) or {}).items()}
+
+    def _part(self, path: str):
+        for pre, src in reversed(self._parts):
+            if not pre or path.startswith(pre):
+                return pre, src
+        return "", self._parts[0][1]
+
+    def read_many(self, paths) -> Dict[str, str]:
+        by: Dict[int, list] = {}
+        for p in paths:
+            pre, _src = self._part(p)
+            by.setdefault(next(i for i, (q, _s) in enumerate(self._parts) if q == pre), []).append(p)
+        out: Dict[str, str] = {}
+        for i, ps in by.items():
+            pre, src = self._parts[i]
+            got = src.read_many([p[len(pre):] for p in ps])
+            out.update({pre + k: v for k, v in got.items()})
+        return out
+
+    def read(self, path: str) -> str:
+        return self.read_many([path]).get(path, "")
+
+
 def read(root: Path, point: str = ".", config_path: Optional[str] = None) -> tuple:
     """(map, config, label) of one point. The working tree is read from disk (WorkSource): no snapshot."""
     if point in WORKTREE:
@@ -106,7 +151,7 @@ def read(root: Path, point: str = ".", config_path: Optional[str] = None) -> tup
         bp["ref"] = "working tree"
         return bp, cfg, "working tree"
     sha, label = resolve(root, point)
-    src = GitSource(sha, root)
+    src = CommitTree(sha, root)          # with its submodules' files at the commits it records
     cfg = config.load(src, root, config_path)
     bp = extract(src, cfg)
     bp["ref"] = label if point in ("checkpoint", "turn") or point in WORKTREE else bp["ref"]
@@ -125,7 +170,7 @@ class Comparison:
 def compare(root: Path, base: str = "checkpoint", head: str = ".", config_path: Optional[str] = None) -> Comparison:
     b, cfg, _ = read(root, head, config_path)
     a_sha, a_label = resolve(root, base)
-    a = extract(GitSource(a_sha, root), cfg)   # one vocabulary for both sides: the head's
+    a = extract(CommitTree(a_sha, root), cfg)   # one vocabulary for both sides: the head's
     if base in ("checkpoint", "turn") or base in WORKTREE:
         a["ref"] = a_label
     return Comparison(diff(a, b, cfg), a, b, cfg, a_label)

@@ -240,16 +240,17 @@ def _resolve(base: str, ref: str, files: set) -> Optional[str]:
 
 def extract(source, cfg: Dict[str, Any], scope: Optional[Tuple[str, List[str]]] = None) -> dict:
     """The research map of one source (a commit, a snapshot of the working tree, or a folder). `scope`: one study of
-    a repository holding several, as (its folder, the other studies' folders): its files and the shared ones."""
+    a repository holding several, as (its folder, the other studies' folders): its own files (results/<study>/...
+    too) and those at the repository's top. Scripts and configs that held no research when last read (by content)
+    are not read again (scan.py)."""
     kinds = cfg["kinds"]
     def_rx = _def_rx(kinds)
     skip = segment_rx(cfg["skip"])
     ignore = [glob_rx(p) for p in cfg.get("ignore", [])]
     files = [f for f in source.files if not skip.search(f) and not any(r.match(f) for r in ignore)]
-    if scope:                     # one study: its files (results/<study>/... too), and those no study claims
-        from .studies import belongs
-        mine, others = scope[0], scope[1]
-        files = [f for f in files if belongs(f, mine) or not any(belongs(f, o) for o in others)]
+    if scope:                     # one study: its files (results/<study>/... too), and those at the top
+        from .studies import of_study
+        files = [f for f in files if of_study(f, scope[0])]
     fileset = set(source.files)
     compiled: Dict[tuple, list] = {}
 
@@ -298,7 +299,17 @@ def extract(source, cfg: Dict[str, Any], scope: Optional[Tuple[str, List[str]]] 
             if cites:
                 n = m.node(nid)
                 n["sources"] = sorted(set(n["sources"]) | cites)
-    for f, text in source.read_many(pick(cfg["scripts"]) + pick(cfg["configs"])).items():
+    from . import scan
+    root = getattr(source, "root", None)
+    seen = scan.Seen(source, root, on_disk=getattr(source, "label", "") == "working tree") if root else None
+    candidates = pick(cfg["scripts"]) + pick(cfg["configs"])
+    for f, text in source.read_many(seen.wanted(candidates) if seen else candidates).items():
+        if not scan.holds_research(text):           # most of them: logs, outputs, plain code
+            if seen:
+                seen.note(f, False)
+            continue
+        if seen:
+            seen.note(f, True)
         read_comment(m, text, f, def_rx)
         block = config_block(text, f) if f in config_files else None
         if not block or not block.get("id"):
@@ -322,6 +333,8 @@ def extract(source, cfg: Dict[str, Any], scope: Optional[Tuple[str, List[str]]] 
             r["metrics"].update(read_results(source.read(path), path))
             m.links.add((f"{nid}.results", "of", nid))
 
+    if seen:
+        seen.save()
     from .trackers import run_nodes
     for f, text in source.read_many([x for x in cfg.get("runs", []) if x in fileset]).items():
         for run in run_nodes(text):

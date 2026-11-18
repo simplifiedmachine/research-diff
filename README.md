@@ -156,8 +156,7 @@ system-diff app --open     # or research-diff app --open
 ```
 
 Open the address it prints (http://localhost:8765/). A research repository opens on research-diff's tabs, all about
-the research: **Now** (what changed since your checkpoint, and one box per study when the repository holds several
-papers), **Evidence**, **Paper** (the paper section by section; a click opens it in the viewer, outlined by sections
+the research: **Now** (what changed since your checkpoint), **Evidence**, **Paper** (the paper section by section; a click opens it in the viewer, outlined by sections
 with your LLM's summary of each), **Review** (what to fix, worst first), **Agents** (the research team and its
 workflow), **Auto-research** and **History**. system-diff's own tabs, about the software, wait behind **System ▸**. In
 Evidence and Review, a click on a claim, a finding or a result in the notes opens its file at that paragraph. The page follows the files as they change, yours and Claude's. To mark what you have
@@ -228,15 +227,22 @@ project at the root), system-diff opens it on Now and folds its own tabs, the so
 cannot fold its tabs, research-diff's sit after system-diff's and are named Research, Problems, Team and Timeline
 instead, so that no two tabs share a name.
 
-**Several papers in one repository** (a folder per study: `1_tradeoff_reward_model_eval/`, `2_behavioral_field/`,
-…, git submodules included) are read study by study, each with its own ids (every paper has its C1), its own diff
-and evidence. The Now tab opens on one box per study; a click opens it, and every tab follows. Name them in
-research-diff.toml (`studies = ["1_tradeoff_reward_model_eval", "2_behavioral_field"]`) or let research-diff find
-them: numbered top-level folders (`1_…`, `2_…`), else folders holding a `paper/` or `experiments/` folder or a LaTeX
-file; a study's files are its folder's and those under its name elsewhere (`results/<study>/…`). If the studies it
-finds are not separate works, **Show as one study** at the end of the list reads the repository as one (remembered;
-**Split into N studies** brings them back), and `studies = false` in research-diff.toml does so for good. Hovering a box of the Evidence diagram says what it is, what supports and
-what contradicts it, what to do about it, and where it is.
+**Several papers in one repository** (a folder per study, its paper in a git submodule or not) are read study by
+study, each with its own ids (every paper has its C1), its own diff and evidence. The studies are in the list on the
+left; pick one and every tab follows it (where system-diff's own list of projects already offers them, that one list
+picks the study). Each tab's title says which study it shows. Name them in research-diff.toml
+(`studies = ["tradeoff_reward_model_eval", "behavioral_field"]`) or let research-diff find them by what the folders
+hold, never by their names: a top-level folder with a paper of its own (a LaTeX file, or what the `paper` globs name)
+and work of its own beside it (code or data). A study reads its own files, those under its name in a shared folder
+(`results/<study>/…`) and those at the repository's top; a submodule's paper is read at the commit the repository
+records for it. If the studies it finds are not separate works, **Show as one study** at the end of the list reads
+the repository as one (remembered; **Split into N studies** brings them back), and `studies = false` in
+research-diff.toml does so for good. Hovering a box of the Evidence diagram says what it is, what supports and what
+contradicts it, what to do about it, and where it is.
+
+On a large repository the first look reads every script and config once (a results folder of logs included); a file
+that holds no research is remembered by its content and not read again until it changes, so later looks take a
+fraction of a second.
 
 The research is read from the files system-diff's engine already holds in memory, once per version of the working
 tree, so the tabs answer in milliseconds. research-diff then starts no web server and no pane of its own (`/research-diff`

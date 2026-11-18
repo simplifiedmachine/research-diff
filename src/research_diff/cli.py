@@ -446,6 +446,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 print("research-diff runs inside system-diff here: starting system-diff watch, one page for both "
                       "(research-diff watch --standalone for research-diff's own page)", flush=True)
             argv = ["--repo", str(root), "watch", "--base", args.base, "--interval", str(args.interval)]
+            if host.opens_on_view():                  # system-diff 0.11: research-diff's tabs, research's Now
+                argv += ["--view", "research"]
             return sd.main(argv + (["--port", str(args.port)] if args.port else []))
         from . import watch
         watch.serve(root, args.base, args.port, args.config, args.interval, quiet=args.quiet)

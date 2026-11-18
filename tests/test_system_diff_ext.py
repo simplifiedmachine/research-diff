@@ -87,18 +87,27 @@ def test_the_research_is_read_once_per_version(study, monkeypatch):
     assert again["graph"] is first["graph"] and calls == []                         # the same files: the same read
 
 
-def test_a_repository_with_several_papers_is_read_study_by_study(repo, files):
+@pytest.fixture
+def no_system_list(monkeypatch):
+    """A system-diff without a list of projects of its own: research-diff lists its studies."""
+    monkeypatch.setattr(x, "_system_projects", lambda root: None)
+
+
+def test_a_repository_with_several_papers_is_read_study_by_study(repo, files, no_system_list):
     files(repo, {
         "1_batch/paper/main.tex": "\\section{Results}\n\n% C1: Small batches win\n% relies on: R1\nYes.\n",
         "1_batch/notes.md": "## R1: Batch 32 beats 512\n\nmetrics: gap=0.03\n",
+        "1_batch/train.py": "print('train')\n",
         "2_lr/paper/main.tex": ("\\section{Results}\n\n% C1: Batch size does not matter\n% relies on: R1\n"
                                 "Indeed.\n\n% C2: Scaling closes the gap\n% contradicts: C1\nAlso.\n"),
         "2_lr/notes.md": "## R1: Scaled LR closes the gap\n\nmetrics: gap=0.002\n",
+        "2_lr/sweep.yaml": "lr: [0.1, 0.4]\n",
     })
     live = engine_live(repo)
-    overview = x.web(ctx(repo, "research", live=live))
-    assert [n["id"] for n in overview["nav"]] == ["1_batch", "2_lr", "~one"]
-    assert overview["diagram"]["enter"]["b:2_lr"] == {"view": "research", "part": "2_lr@"}
+    now = x.web(ctx(repo, "research", live=live))
+    assert [n["id"] for n in now["nav"]] == ["1_batch", "2_lr", "~one"]
+    assert now["nav"][1]["target"] == {"view": "research", "part": "2_lr@", "scope": "2_lr"}
+    assert now["diagram"]["title"] != "Studies" and now["title"].endswith("1 · batch")   # the first study, no list
     one = x.state(ctx(repo, "evidence", "1_batch@", live=live))
     two = x.state(ctx(repo, "evidence", "2_lr@", live=live))
     assert one["graph"]["nodes"]["C1"]["title"] == "Small batches win"            # each study its own C1
@@ -153,35 +162,40 @@ def test_claude_can_name_research_blocks_and_find_their_source(study):
     assert src["files"] == [{"path": "paper/main.tex", "line": 7}] and "marker" in src["config"]["change"]
 
 
-def test_numbered_paper_folders_are_studies_whatever_the_globs_say(repo, files):
-    """The shape of a real repository: six numbered paper folders (one without a paper yet), a results folder by
-    study, shared scripts, slides in another folder, and a research-diff.toml whose globs name paper 1 only."""
+def test_studies_are_folders_with_a_paper_and_work_of_their_own_whatever_their_names(repo, files, no_system_list):
+    """Found by what the folders hold, never by their names: a paper and work beside it (code or data). Slides, shared
+    scripts and a paper alone are no study, and a study reads only its own files (and those at the top)."""
     files(repo, {
-        "research-diff.toml": 'paper = ["1_tradeoff/paper/*.tex"]\nnotes = ["1_tradeoff/**/*.md"]\n',
-        "1_tradeoff/paper/main.tex": "\\section{Results}\n\n% C1: Reward models trade off\n% relies on: R1\nYes.\n",
-        "1_tradeoff/notes.md": "## R1: The lean spans 26 to 68%\n\nmetrics: lean=0.42\n",
-        "2_behavioral/paper/main.tex": "\\section{Results}\n\n% C1: Behaviour drifts\nIt does.\n",
-        "3_duration/paper/main.tex": "\\section{Intro}\n\n% C1: Durations matter\nThey do.\n",
-        "4_quality/paper/main.tex": "\\section{Intro}\n\n% C1: Data quality\nYes.\n",
-        "5_critical/paper/main.tex": "\\section{Intro}\n\n% C1: Critical periods\nYes.\n",
-        "6_serving/survey/notes.md": "## R1: Latency doubles at 64 users\n\nmetrics: p99=2.1\n",
-        "results/2_behavioral/notes.md": "## R1: Drift of 0.3\n\nmetrics: drift=0.3\nsupports: C1\n",
-        "patent_presentations/deck.tex": "% C9: Not a study\n",
-        "scripts/run.py": "print(1)\n",
+        "research-diff.toml": 'paper = ["tradeoff/paper/*.tex"]\nnotes = ["tradeoff/**/*.md"]\n',
+        "tradeoff/paper/main.tex": "\\section{Results}\n\n% C1: Reward models trade off\n% relies on: R1\nYes.\n",
+        "tradeoff/notes.md": "## R1: The lean spans 26 to 68%\n\nmetrics: lean=0.42\n",
+        "tradeoff/experiments/run.py": "print('run')\n",
+        "behavioral/paper/main.tex": "\\section{Results}\n\n% C1: Behaviour drifts\nIt does.\n",
+        "behavioral/experiments/config.yaml": "lr: 0.1\n",
+        "duration/paper/main.tex": "\\section{Intro}\n\n% C1: Durations matter\nThey do.\n",
+        "duration/env.py": "print('env')\n",
+        "serving/survey/survey.tex": "\\section{Intro}\n\n% C1: Latency doubles at 64 users\nIt does.\n",
+        "serving/bench/load.py": "print('load')\n",
+        "results/behavioral/notes.md": "## R1: Drift of 0.3\n\nmetrics: drift=0.3\nsupports: C1\n",
+        "patent_presentations/deck.tex": "% C9: Not a study\n",            # slides: a paper, no work
+        "scripts/run.py": "print(1)\n",                                       # work, no paper
+        "drafts/paper/main.tex": "% C7: A draft\n",                           # a paper alone
     })
     live = engine_live(repo)
-    overview = x.web(ctx(repo, "research", live=live))
-    assert [n["id"] for n in overview["nav"]] == ["1_tradeoff", "2_behavioral", "3_duration", "4_quality",
-                                                  "5_critical", "6_serving", "~one"]
-    two = x.state(ctx(repo, "evidence", "2_behavioral@", live=live))
-    assert two["graph"]["nodes"]["C1"]["title"] == "Behaviour drifts"          # read despite the paper-1-only globs
-    assert two["graph"]["nodes"]["C1"]["verdict"] == "supported"               # results/2_behavioral/ is its own
-    six = x.state(ctx(repo, "research", "6_serving@", live=live))
-    assert "R1" in six["map"]["nodes"] and "C9" not in six["map"]["nodes"]
+    now = x.web(ctx(repo, "research", live=live))
+    assert [n["id"] for n in now["nav"]] == ["behavioral", "duration", "serving", "tradeoff", "~one"]
+    two = x.state(ctx(repo, "evidence", "behavioral@", live=live))
+    assert two["graph"]["nodes"]["C1"]["title"] == "Behaviour drifts"          # read despite the tradeoff-only globs
+    assert two["graph"]["nodes"]["C1"]["verdict"] == "supported"               # results/behavioral/ is its own
+    serving = x.state(ctx(repo, "research", "serving@", live=live))
+    assert serving["graph"]["nodes"]["C1"]["title"] == "Latency doubles at 64 users"
+    assert not {"C7", "C9"} & set(serving["map"]["nodes"])                     # not another folder's
+    assert [f["path"] for f in serving["map"]["paper"]] == ["serving/survey/survey.tex"]
 
 
-def test_the_person_can_read_the_repository_as_one_study_and_split_it_again(repo, files):
-    files(repo, {"1_a/paper/main.tex": "% C1: One\n", "2_b/paper/main.tex": "% C1: Two\n"})
+def test_the_person_can_read_the_repository_as_one_study_and_split_it_again(repo, files, no_system_list):
+    files(repo, {"1_a/paper/main.tex": "% C1: One\n", "1_a/run.py": "print(1)\n",
+                 "2_b/paper/main.tex": "% C1: Two\n", "2_b/run.py": "print(2)\n"})
     live = engine_live(repo)
     nav = x.web(ctx(repo, "research", live=live))["nav"]
     assert [n["id"] for n in nav] == ["1_a", "2_b", "~one"]
@@ -287,3 +301,49 @@ def test_the_pane_draws_the_research_tabs_too(study):
     for view in ("check", "team", "timeline"):
         got = x.pane(ctx(study, view))
         assert got["view"] == view and got["rows"], view
+
+
+def test_the_study_follows_the_project_picked_in_system_diffs_own_list(repo, files, monkeypatch):
+    """Where system-diff's list already offers the studies' folders, there is one list: its pick (which stays from
+    tab to tab) is the study; a study named in the page's part still wins."""
+    files(repo, {"a/paper/main.tex": "% C1: Alpha\n", "a/run.py": "print(1)\n",
+                 "b/paper/main.tex": "% C1: Beta\n", "b/run.py": "print(2)\n"})
+    live = engine_live(repo)
+    monkeypatch.setattr(x, "_system_projects", lambda root: ["a", "b"])
+    monkeypatch.setattr(x, "_scope", lambda c: "b/paper")                       # a folder inside study b
+    page = x.web(ctx(repo, "paper", live=live))
+    assert "nav" not in page                                                     # one list: system-diff's
+    assert x.state(ctx(repo, "evidence", "", live=live))["graph"]["nodes"]["C1"]["title"] == "Beta"
+    assert x.state(ctx(repo, "evidence", "a@", live=live))["graph"]["nodes"]["C1"]["title"] == "Alpha"
+    assert [p["path"] for p in x.projects(ctx(repo, "", live=live))] == ["a", "b"]   # for system-diff's own list
+    monkeypatch.setattr(x, "_system_projects", lambda root: "one")              # shown as one project there
+    assert x.state(ctx(repo, "evidence", "", live=engine_live(repo, "v2")))["studies"] == []
+
+
+def test_files_without_research_are_read_once(repo, files):
+    """Logs and outputs are read once: a file that held no research is not read again until it changes."""
+    from research_diff import compare, config, extract as ex, scan
+    files(repo, {f"results/log{i}.json": '{"loss": %d}' % i for i in range(30)})
+    files(repo, {"configs/e3.yaml": "research:\n  id: E3\n  tests: [H1]\n"})
+
+    class Counting(compare.WorkSource):
+        asked: list = []
+
+        def read_many(self, paths):
+            paths = list(paths)
+            Counting.asked += paths
+            return super().read_many(paths)
+    scan.forget(repo)
+    src = Counting(repo)
+    cfg = config.load(src, repo)
+    first = ex.extract(src, cfg)
+    assert sum(p.startswith("results/log") for p in Counting.asked) == 30 and "E3" in first["nodes"]
+    Counting.asked = []
+    again = ex.extract(Counting(repo), cfg)
+    assert not any(p.startswith("results/log") for p in Counting.asked)         # known to hold nothing
+    assert "configs/e3.yaml" in Counting.asked and "E3" in again["nodes"]       # research is read every time
+    files(repo, {"results/log3.json": '{"research": {"id": "E9", "tests": ["H2"]}}'})
+    Counting.asked = []
+    changed = ex.extract(Counting(repo), cfg)
+    assert [p for p in Counting.asked if p.startswith("results/log")] == ["results/log3.json"]
+    assert "E9" in changed["nodes"]

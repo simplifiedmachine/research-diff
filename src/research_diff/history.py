@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from system_diff.sources import GitSource, git
+from system_diff.sources import git
 
 from . import config, store
 from .diff import diff
@@ -81,10 +81,11 @@ def commits(root: Path, n: int = 0) -> List[dict]:
                 parent = git("rev-parse", "--verify", "-q", f"{sha}^", cwd=root).strip()
             except subprocess.CalledProcessError:
                 parent = ""
-            src = GitSource(sha, root)
+            from .compare import CommitTree
+            src = CommitTree(sha, root)
             cfg = config.load(src, root)
             b = extract(src, cfg)
-            a = extract(GitSource(parent, root), cfg) if parent else {"ref": "", "nodes": {}, "links": [],
+            a = extract(CommitTree(parent, root), cfg) if parent else {"ref": "", "nodes": {}, "links": [],
                                                                        "warnings": []}
             d = diff(a, b, cfg)
             cache[sha] = entry(d, b, "commit", commit=sha[:9], message=msg, at=float(ct), base=parent,
@@ -124,9 +125,11 @@ def commits_of(root: Path, scope: Optional[tuple] = None, sid: str = "", n: int 
     if read and todo:
         memo: dict = {}
 
+        from .compare import CommitTree
+
         def research_at(sha: str) -> Tuple[dict, dict]:
             if sha not in memo:
-                src = GitSource(sha, root)
+                src = CommitTree(sha, root)             # its submodules' papers too, at the commits it records
                 cfg = config.load(src, root)
                 memo[sha] = (extract(src, cfg, scope), cfg)
             return memo[sha]
@@ -144,7 +147,7 @@ def commits_of(root: Path, scope: Optional[tuple] = None, sid: str = "", n: int 
                                    head=sha) if d["changes"] else None
             except Exception:  # noqa: BLE001 - a commit that cannot be read is left out, the others go on
                 cache[sha] = None
-            store.write(root, name, cache)   # one by one: the page shows them as they come
+        store.write(root, name, cache)       # once: every write moves the engine's version and redraws the pages
         todo = []
     listed = [ln.split("\t", 1)[0] for ln in reversed(log)]
     return [cache[x] for x in listed if cache.get(x)], len(todo)
