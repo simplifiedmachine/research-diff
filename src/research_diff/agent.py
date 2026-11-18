@@ -90,7 +90,15 @@ def _split(cmd: str) -> list:
 
 
 def _claude(args: list) -> subprocess.CompletedProcess:
-    return subprocess.run(["claude", *args], capture_output=True, text=True, timeout=60)
+    """`claude <args>`, by the path PATH resolves it to: on Windows that is claude.cmd (or .exe), which a process
+    cannot be started from by the bare name. A `claude` that cannot be run answers like a failed command."""
+    exe = shutil.which("claude")
+    if not exe:
+        return subprocess.CompletedProcess(["claude", *args], 127, "", "claude is not on PATH")
+    try:
+        return subprocess.run([exe, *args], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return subprocess.CompletedProcess([exe, *args], 1, "", f"{type(exc).__name__}: {exc}")
 
 
 def hook_message(root: Path) -> Optional[str]:

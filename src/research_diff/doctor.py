@@ -67,7 +67,8 @@ def report(root: Path, config_path: str = "") -> List[str]:
     out.append("✓ the pane plugin is installed" if plugin else
                "· the pane plugin is not installed (/plugin marketplace add simplifiedmachine/research-diff)")
     if shutil.which("claude"):
-        got = subprocess.run(["claude", "mcp", "get", "research-diff"], capture_output=True, text=True)
+        from .agent import _claude
+        got = _claude(["mcp", "get", "research-diff"])
         out.append("✓ MCP server registered" if got.returncode == 0 else "· MCP server not registered "
                    "(research-diff setup claude)")
     else:
