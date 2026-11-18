@@ -293,6 +293,8 @@ def parser() -> argparse.ArgumentParser:
     w.add_argument("--port", type=int, default=0, help="default: the first free from 8765, shared with system-diff")
     w.add_argument("--interval", type=float, default=2.0)
     w.add_argument("--quiet", action="store_true")
+    w.add_argument("--standalone", action="store_true",
+                   help="research-diff's own page even when system-diff can serve its tabs (RESEARCH_DIFF_STANDALONE=1)")
     r = sub.add_parser("readme", help="rewrite the README's research section")
     r.add_argument("--check", action="store_true")
     sub.add_parser("doctor", help="why research-diff is quiet, slow or wrong here")
@@ -426,6 +428,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.cmd == "readme":
         return readme.run(root, args.config, args.check)
     if args.cmd == "watch":
+        from . import host
+        if host.merged() and not args.standalone:      # one page for both: system-diff's, with research-diff's tabs
+            from system_diff import cli as sd
+            if not args.quiet:
+                print("research-diff runs inside system-diff here: starting system-diff watch, one page for both "
+                      "(research-diff watch --standalone for research-diff's own page)", flush=True)
+            argv = ["--repo", str(root), "watch", "--base", args.base, "--interval", str(args.interval)]
+            return sd.main(argv + (["--port", str(args.port)] if args.port else []))
         from . import watch
         watch.serve(root, args.base, args.port, args.config, args.interval, quiet=args.quiet)
         return 0

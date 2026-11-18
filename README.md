@@ -119,20 +119,45 @@ no experiment, and when a link points at nothing.
 
 ## Install and run
 
-Python 3.11+. The newest work (studies, one evidence graph, fast hooks, saved agents, running inside system-diff) is
-on the main branch until the next release; PyPI has the last release.
+Three steps, in a terminal (Python 3.11+). The newest work is on the main branch until the next release.
 
-**With system-diff (recommended): one page, one pane, for both.** Quit Claude Code first (on Windows it keeps the
-programs open), then:
+**1. Install** research-diff and system-diff (one page for both). On Windows, quit Claude Code first: it keeps the
+programs open.
 
 ```sh
 python -m pip install -U "system-diff[mcp] @ git+https://github.com/simplifiedmachine/system-diff@main"
 python -m pip install -U "research-diff[mcp] @ git+https://github.com/simplifiedmachine/research-diff@main"
-python -c "import system_diff, research_diff; print(system_diff.__version__, research_diff.__version__)"
 ```
 
-In Claude Code, in your research repository, add both plugins once (they bring the hooks, the pane and the MCP
-tools), then restart Claude Code:
+**2. Give Claude Code the tools** (once; every session in every repository then has them):
+
+```sh
+claude mcp add --scope user research-diff -- research-diff mcp
+claude mcp add --scope user system-diff -- system-diff mcp
+```
+
+Ask Claude "what contradicts the paper?" or "does C3 still hold?" and it answers from them (`research_evidence`,
+`explain`, `paper_outline`, `review_paper`, `research_diff`, ...).
+
+**3. Open the page** in your research repository:
+
+```sh
+cd path/to/your/research-repo
+system-diff watch          # or research-diff watch: the same page
+```
+
+Open the address it prints (http://localhost:8765/). After system-diff's tabs come research-diff's: **Research**
+(what changed since your checkpoint, and one box per study when the repository holds several papers), **Evidence**,
+**Paper** and **Auto-research**. The page follows the files as they change, yours and Claude's. To mark what you have
+seen, tell Claude "mark it as seen" (or run `research-diff checkpoint`): the next diff starts there.
+
+Check the setup any time with `research-diff doctor`.
+
+<details><summary>Optional: the Claude Code plugins (a pane in the terminal, hooks)</summary>
+
+The plugins add a pane beside the chat (`/system-diff`), the status line, and hooks that note what Claude works on:
+"this turn" diffs, which agent works where, the agents' bus, history per request, and auto-research handing a
+finished iteration to Claude by itself. Without them, those are off; everything else works from the page.
 
 ```
 /plugin marketplace add simplifiedmachine/system-diff
@@ -141,23 +166,12 @@ tools), then restart Claude Code:
 /plugin install research-diff
 ```
 
-Then:
+`research-diff setup claude` wires the hooks, status line, a skill and the MCP server without the pane (`--undo` takes
+them back). `/plugin uninstall research-diff` and `/plugin uninstall system-diff` remove the plugins.
 
-1. `/system-diff` opens the pane: system-diff's tabs, then research-diff's: `s` Research, `e` Evidence, `p` Paper,
-   `u` Auto-research.
-2. The 🌐 address at the top of the pane is the same views in a browser (one port for every project of both tools).
-3. Work with Claude as usual: after each turn the tabs show what changed in the research, its evidence and the
-   paper's numbers.
-4. To mark what you have seen, tell Claude "mark it as seen" (or run `research-diff checkpoint`): the next diff starts
-   there.
-
-**On its own** (without system-diff, or with `RESEARCH_DIFF_STANDALONE=1`): install research-diff alone (the line
-above, or `pip install "research-diff[mcp]"` for the last release), add only its plugin, and `/research-diff` opens
-its own pane; `research-diff watch` serves its own page. Its own page and pane read a repository as one study (the
-study-by-study views are inside system-diff). Without the pane: `research-diff setup claude` (hooks, status line, a
-skill and the MCP server; `--undo` takes them back).
-
-Check the setup any time with `research-diff doctor`.
+On its own, without system-diff (or with `RESEARCH_DIFF_STANDALONE=1`), research-diff serves its own page
+(`research-diff watch --standalone`) and pane (`/research-diff`); they read a repository as one study.
+</details>
 
 <details><summary>Upgrading, and Windows</summary>
 
@@ -207,7 +221,7 @@ says where its tabs are), and what auto-research asks of Claude goes through sys
 
 Until system-diff 0.10.0 is on PyPI, both come from their main branches (see Install and run).
 
-## In Claude Code
+## In Claude Code (with the plugins)
 
 - **The pane**: `n` Now · `r` Review · `e` Evidence · `p` Paper · `u` Auto-research · `a` Agents · `h` History. Arrows pick a claim (its
   evidence lights up), Enter zooms into its evidence chain, `b` goes back, `f` follows Claude. `/research-diff tui`
