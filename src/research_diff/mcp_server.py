@@ -256,6 +256,26 @@ def build() -> Server:
         return chat.add_note(root, node, text)
 
     @_read_only(server)
+    def saved_agents() -> Dict[str, Any]:
+        """The subagents saved for this project (.claude/agents) and for the person (~/.claude/agents), with how
+        often each role was planned and finished; and the roles worth keeping that are not saved yet (they came back,
+        or a standing role such as a reviewer or tester finished its work). Start a saved one by its name."""
+        root = repo_root()
+        return {"saved": agents.library(root), "worth keeping": agents.worth_keeping(root)}
+
+    @server.tool()
+    def save_agent(name: str, description: str, prompt: str, tools: str = "", model: str = "",
+                   scope: str = "project") -> Dict[str, Any]:
+        """Save an agent as a Claude Code subagent, so later sessions and teams reuse it: when its role is not a
+        one-off (saved_agents lists those worth keeping) or the person asks. `description` says when to use it;
+        `prompt` is its standing instructions (general, not this task's details); `tools` e.g. "Read, Grep, Bash";
+        `scope` "project" (.claude/agents, shared through git) or "user". Tell the person what you saved."""
+        try:
+            return agents.save_agent(repo_root(), name, description, prompt, tools, model, scope)
+        except ValueError as exc:
+            return {"error": str(exc)}
+
+    @_read_only(server)
     def autoresearch_status() -> Dict[str, Any]:
         """Auto-research: the campaign (goal, target, budget, state), each iteration's experiments on the servers'
         GPUs with their state and the tail of their logs, and what is asked of you now (`pending`)."""

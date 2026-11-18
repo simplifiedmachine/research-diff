@@ -83,8 +83,9 @@ class WorkSource:
 
     def __init__(self, root: Path):
         self.root = Path(root)
-        out = git("ls-files", "-z", "-c", "-o", "--exclude-standard", cwd=self.root)
-        self.files = sorted({f for f in out.split("\0") if f})
+        tracked = git("ls-files", "-z", "-c", "--recurse-submodules", cwd=self.root)   # submodules' files too
+        others = git("ls-files", "-z", "-o", "--exclude-standard", cwd=self.root)
+        self.files = sorted({f for f in (tracked + "\0" + others).split("\0") if f})
 
     def read(self, path: str) -> str:
         try:

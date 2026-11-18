@@ -245,7 +245,11 @@ def plan(root: Path, task: str, bp: dict, graph: dict, by: str = "section",
             "node's topic; never edit their claim yourself. Read what the bus tells you after each tool call and react "
             "to contradictions first. Record runs with `log_result` (agent: your name).",
         ]
+        reuse = reuse_note(root, g["name"])
+        if reuse:
+            lines.append(reuse)
         briefs.append({"name": g["name"], "owns": g["owns"], "watches": g["watches"], "brief": "\n".join(lines)})
+        note_use(root, g["name"], "\n".join(lines))
     s["plan"] = {"task": task, "by": "agents" if agents else by, "at": round(time.time()), "agents": briefs}
     for b in briefs:
         for nid in b["owns"]:
@@ -254,7 +258,9 @@ def plan(root: Path, task: str, bp: dict, graph: dict, by: str = "section",
     save(root, s)
     publish(root, "main", "*", f"Plan: {len(briefs)} agents for {task}: " + ", ".join(b["name"] for b in briefs),
             auto=True)
+    keep = worth_keeping(root)
     return {"task": task, "agents": briefs,
+            "worth keeping": [f"{k['name']} ({k['why']})" for k in keep],
             "how": "Start one subagent per agent with the Task tool, its brief as the prompt (add the task). They run "
                    "in parallel; the bus carries what each one changes to those whose work relies on it."}
 
@@ -278,3 +284,107 @@ def team(root: Path, graph: dict) -> List[dict]:
                     "contradicted_by": [c for c in graph["cross_agent"] if c["owners"][1] == name],
                     "ids": sorted(k for k, v in s["ids"].items() if v == name)})
     return out
+
+
+# ── agents worth keeping: saved as Claude Code subagents, reused by later plans ────────────────────────────────────
+# A plan's agents are made for one task. Some are not one-off: a role that comes back (a results writer, a reviewer,
+# a tester, an experiment runner), or one whose work keeps landing. Those are worth saving as Claude Code subagents
+# (`.claude/agents/<name>.md`: name, description, tools, model, then its instructions), so every later session, plan
+# and team can use them by name. research-diff counts each role's plans and finished runs, says which are worth
+# keeping, saves one when asked (`save_agent`, never over a file it did not write), and a new plan reuses a saved
+# agent whose name matches a role.
+
+STANDING = ("review", "test", "verif", "check", "writer", "runner", "analy", "audit", "critic", "editor")
+SAVED_MARK = "<!-- saved by research-diff -->"
+
+
+def _usage(root: Path) -> dict:
+    return store.read(root, "agent-usage.json", {}) or {}
+
+
+def note_use(root: Path, name: str, brief: str = "", finished: bool = False) -> None:
+    """A role planned (with its brief) or an agent of that name that finished its work."""
+    u = _usage(root)
+    r = u.setdefault(slug(name), {"planned": 0, "finished": 0, "brief": "", "last": 0})
+    r["finished" if finished else "planned"] += 1
+    if brief:
+        r["brief"] = brief[:4000]
+    r["last"] = round(time.time())
+    store.write(root, "agent-usage.json", u)
+
+
+def _parse_agent(path: Path, scope: str) -> Optional[dict]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    head: Dict[str, str] = {}
+    if text.startswith("---"):
+        block = text.split("---", 2)[1] if text.count("---") >= 2 else ""
+        for line in block.splitlines():
+            if ":" in line:
+                k, v = line.split(":", 1)
+                head[k.strip()] = v.strip()
+    return {"name": head.get("name") or path.stem, "description": head.get("description", ""),
+            "tools": head.get("tools", ""), "model": head.get("model", ""), "scope": scope, "file": str(path),
+            "ours": SAVED_MARK in text}
+
+
+def library(root: Path) -> List[dict]:
+    """The saved subagents this project can use: its own (.claude/agents) and the person's (~/.claude/agents)."""
+    out = []
+    for scope, folder in (("project", Path(root) / ".claude" / "agents"), ("user", Path.home() / ".claude" / "agents")):
+        if folder.is_dir():
+            for f in sorted(folder.glob("*.md")):
+                got = _parse_agent(f, scope)
+                if got:
+                    out.append(got)
+    u = _usage(root)
+    for a in out:
+        a.update({k: u.get(slug(a["name"]), {}).get(k, 0) for k in ("planned", "finished")})
+    return out
+
+
+def worth_keeping(root: Path) -> List[dict]:
+    """Roles not saved yet that are not one-off: planned or finished twice, or a standing role (a reviewer, a tester,
+    a writer, a runner) that finished once."""
+    saved = {slug(a["name"]) for a in library(root)}
+    out = []
+    for name, r in _usage(root).items():
+        if name in saved:
+            continue
+        standing = any(w in name for w in STANDING)
+        if r["planned"] + r["finished"] >= 2 or (standing and r["finished"] >= 1):
+            why = f"planned {r['planned']}×, finished {r['finished']}×" + (" (a standing role)" if standing else "")
+            out.append({"name": name, "why": why, "brief": r.get("brief", "")})
+    return sorted(out, key=lambda x: x["name"])
+
+
+def save_agent(root: Path, name: str, description: str, prompt: str, tools: str = "", model: str = "",
+               scope: str = "project") -> dict:
+    """Write a Claude Code subagent (`.claude/agents/<name>.md`, or ~/.claude/agents for scope "user"). An existing
+    file research-diff did not write is left alone."""
+    n = slug(name)
+    if not n or not description.strip() or not prompt.strip():
+        raise ValueError("a saved agent needs a name, a description (when to use it) and its instructions")
+    folder = (Path.home() / ".claude" / "agents") if scope == "user" else (Path(root) / ".claude" / "agents")
+    path = folder / f"{n}.md"
+    if path.exists() and SAVED_MARK not in path.read_text(encoding="utf-8", errors="replace"):
+        raise ValueError(f"{path} exists and was not written by research-diff: left alone")
+    head = ["---", f"name: {n}", f"description: {' '.join(description.split())}"]
+    head += [f"tools: {tools}"] if tools.strip() else []
+    head += [f"model: {model}"] if model.strip() else []
+    folder.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write("\n".join(head + ["---", SAVED_MARK, "", prompt.strip(), ""]))
+    return {"saved": n, "file": str(path), "scope": scope}
+
+
+def reuse_note(root: Path, name: str) -> str:
+    """For a plan's brief: the saved subagent to start this agent as, when one matches its role."""
+    want = slug(name)
+    for a in library(root):
+        s = slug(a["name"])
+        if s == want or (len(s) > 4 and (s in want or want in s)):
+            return f"A saved subagent fits this role: start it as `{a['name']}` (the Task tool's subagent type)."
+    return ""

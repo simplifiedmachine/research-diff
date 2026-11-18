@@ -250,6 +250,8 @@ def _stop_work(root: Path, p: dict, subagent: bool) -> None:
             review.ensure(root)       # the paper changed this turn: read it against itself again
         if subagent:
             agents.publish(root, who, "*", f"finished: {c.diff['headline']}", auto=True)
+    if subagent and who != "main":
+        agents.note_use(root, who, finished=True)      # a role that keeps finishing work is worth keeping
     g = evidence.build(c.after, c.cfg, agents.owners(root))
     agents.remember(root, g)
     activity.write_state(root, headline=c.diff["headline"], evidence=g["headline"],

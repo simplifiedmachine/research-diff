@@ -183,3 +183,27 @@ def test_suggested_links_go_under_the_target_and_are_checked(study, tmp_path):
     p.write_text(got["patch"], encoding="utf-8", newline="\n")
     subprocess.run(["git", "apply", str(p)], cwd=study, check=True)
     assert ["R2", "contradicts", "C1"] in compare.read(study, ".")[0]["links"]
+
+
+def test_agents_that_are_not_one_off_are_suggested_saved_and_reused(study, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    g, bp, cfg = compare.evidence_of(study)
+    agents.plan(study, "write the paper", bp, g)
+    assert agents.worth_keeping(study) == []                                  # once: maybe a one-off
+    agents.note_use(study, "results-writer", finished=True)
+    keep = {k["name"]: k["why"] for k in agents.worth_keeping(study)}
+    assert "results-writer" in keep and "standing role" in keep["results-writer"]
+    got = agents.save_agent(study, "results-writer", "Writes the Results section from the evidence",
+                            "You write a paper's Results section. Every number comes from a results file.",
+                            tools="Read, Edit, Grep")
+    text = (study / ".claude" / "agents" / "results-writer.md").read_text()
+    assert got["scope"] == "project" and text.startswith("---\nname: results-writer\ndescription: Writes")
+    assert "tools: Read, Edit, Grep" in text
+    assert [a["name"] for a in agents.library(study)] == ["results-writer"]
+    assert "results-writer" not in {k["name"] for k in agents.worth_keeping(study)}
+    plan = agents.plan(study, "revise the paper", bp, g)
+    assert "start it as `results-writer`" in plan["agents"][0]["brief"]
+    (study / ".claude" / "agents" / "mine.md").write_text("---\nname: mine\n---\nhand written\n")
+    with pytest.raises(ValueError):
+        agents.save_agent(study, "mine", "x", "y")                             # never over a file it did not write

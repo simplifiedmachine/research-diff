@@ -14,6 +14,7 @@ system-diff per engine version. The base of the diff (your checkpoint's commit) 
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import threading
@@ -55,38 +56,95 @@ def _stamp(root: Path) -> tuple:
     return tuple(out) + (compare.checkpoint_sha(root),)
 
 
-def state(ctx) -> dict:
-    """Everything the tabs draw from: the map, the diff since the checkpoint, the evidence graph, worth a look."""
-    from . import activity, agents, chat, compare, config, evidence, objectives, rank, review
-    from .diff import diff
-    from .extract import extract
+class _Merged:
+    """The engine's files and, beside them, the files of the repository's git submodules (the engine lists a submodule
+    as one entry: its own files are read from disk here)."""
+    label = "working tree"
+
+    def __init__(self, src, root: Path):
+        self._src, self.root = src, Path(root)
+        extra: List[str] = []
+        if (self.root / ".gitmodules").is_file():
+            from system_diff.sources import git
+            try:
+                listed = git("ls-files", "-z", "-c", "--recurse-submodules", cwd=self.root).split("\0")
+            except Exception:  # noqa: BLE001
+                listed = []
+            known = set(src.files)
+            extra = [f for f in listed if f and f not in known]
+        self._extra = set(extra)
+        self.files = sorted(set(src.files) | self._extra)
+
+    def read(self, path: str) -> str:
+        if path in self._extra:
+            try:
+                return (self.root / path).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                return ""
+        return self._src.read(path)
+
+    def read_many(self, paths) -> Dict[str, str]:
+        mine = [p for p in paths if p not in self._extra]
+        out = dict(self._src.read_many(mine)) if mine else {}
+        out.update({p: self.read(p) for p in paths if p in self._extra})
+        return out
+
+
+def _source(ctx):
+    """(source of the working tree, a key that is the same for the same files, root)."""
+    from . import compare
     root = Path(ctx.root)
     live = getattr(ctx, "live", None)
     src = getattr(live, "source", None) if live is not None else None
-    ident = getattr(live, "identity", "") if src is not None else ""
-    key = (str(root), ident or None, _stamp(root))
-    with _LOCK:
-        if key in _STATE:
-            return _STATE[key]
-    if src is not None:                             # the engine's files: no git, no snapshot
-        cfg = config.load(src, root)
-        after = extract(src, cfg)
-        after["ref"] = "working tree"
-        sha, label = compare.resolve(root, "checkpoint")
-        bkey = (str(root), sha, json.dumps(cfg, sort_keys=True, default=str))
+    if src is not None:
+        merged = _Merged(src, root)
+        return merged, (getattr(live, "identity", "") or None, len(merged._extra)), root
+    work = compare.WorkSource(root)
+    return work, None, root
+
+
+def state(ctx) -> dict:
+    """Everything the tabs draw from, for the study the view's part names (a repository with several papers holds a
+    study per paper folder): the map, the diff since the checkpoint, the evidence graph, worth a look."""
+    from . import studies
+    src, ident, root = _source(ctx)
+    from . import config
+    cfg = config.load(src, root)
+    found = studies.detect(src.files, cfg)
+    sid, rest = studies.split(ctx.part or "")
+    if found and sid not in {x["id"] for x in found}:
+        sid = found[0]["id"]                 # the first study, until one is picked
+    if not found:
+        sid = ""
+    out = _study_state(ctx, src, ident, root, cfg, found, sid)
+    return {**out, "studies": found, "study": sid, "rest": rest}
+
+
+def _study_state(ctx, src, ident, root: Path, cfg: dict, found: List[dict], sid: str) -> dict:
+    from . import activity, agents, chat, compare, evidence, objectives, rank, review, studies
+    from .diff import diff
+    from .extract import extract
+    key = (str(root), ident, sid, _stamp(root)) if ident is not None else None
+    if key is not None:
         with _LOCK:
-            before = _BASE.get(bkey)
-        if before is None:
-            from system_diff.sources import GitSource
-            before = extract(GitSource(sha, root), cfg)
-            before["ref"] = label
-            with _LOCK:
-                _BASE[bkey] = before
-                while len(_BASE) > 8:
-                    _BASE.pop(next(iter(_BASE)))
-        c = compare.Comparison(diff(before, after, cfg), before, after, cfg, label)
-    else:                                           # no engine here (a pane without one): the usual way
-        c = compare.compare(root, "checkpoint", ".")
+            if key in _STATE:
+                return _STATE[key]
+    sc = studies.scope(found, sid)
+    after = extract(src, cfg, sc)
+    after["ref"] = "working tree"
+    sha, label = compare.resolve(root, "checkpoint")
+    bkey = (str(root), sha, sid, json.dumps(cfg, sort_keys=True, default=str))
+    with _LOCK:
+        before = _BASE.get(bkey)
+    if before is None:
+        from system_diff.sources import GitSource
+        before = extract(GitSource(sha, root), cfg, sc)
+        before["ref"] = label
+        with _LOCK:
+            _BASE[bkey] = before
+            while len(_BASE) > 16:
+                _BASE.pop(next(iter(_BASE)))
+    c = compare.Comparison(diff(before, after, cfg), before, after, cfg, label)
     g = evidence.build(c.after, c.cfg, agents.owners(root))
     g["notes"] = {k: [n["text"] for n in v] for k, v in chat.notes_by_node(root).items()}
     g["pointing"] = chat.pointing(root).get("ids", [])
@@ -96,11 +154,28 @@ def state(ctx) -> dict:
     out = {"cmp": c, "map": c.after, "graph": g, "objectives": objs, "review": rv, "worth": worth,
            "focus": activity.focus(root, c.after), "request": activity.last_request(root), "root": root,
            "notes": chat.notes_by_node(root), "pointing": chat.pointing(root)}
-    with _LOCK:
-        _STATE[key] = out
-        while len(_STATE) > 6:
-            _STATE.pop(next(iter(_STATE)))
+    if key is not None:
+        with _LOCK:
+            _STATE[key] = out
+            while len(_STATE) > 24:
+                _STATE.pop(next(iter(_STATE)))
     return out
+
+
+def _part(S: dict, node: str = "") -> str:
+    from . import studies
+    return studies.join(S.get("study", ""), node)
+
+
+def _nav(S: dict, view: str) -> List[dict]:
+    """The studies, for system-diff's pinned list on the left (shown once it has one)."""
+    return [{"id": x["id"], "title": x["title"], "sub": x["path"], "active": x["id"] == S["study"],
+             "target": {"view": view, "part": x["id"] + "@"}} for x in S.get("studies", [])]
+
+
+def _study_title(S: dict) -> str:
+    me = next((x for x in S.get("studies", []) if x["id"] == S.get("study")), None)
+    return me["title"] if me else ""
 
 
 # ── the evidence graph as system-diff's diagram model ──────────────────────────────────────────────────────────────
@@ -173,12 +248,77 @@ def _why(g: dict, nid: str) -> str:
     return f"{n.get('kind', '')}" + ("\n" + "\n".join(uses) if uses else "")
 
 
-def _web_diagram(model: dict, g: dict, view: str, title: str, aside: str, part: str) -> dict:
+def _count(n: int, word: str) -> str:
+    return f"{n} {word}{'' if n == 1 else 's'}"
+
+
+def _detail(S: dict, nid: str) -> dict:
+    """A box's card, in the page's own shape (What it is · How it works · Worth knowing · Facts), in plain words."""
+    g = S["graph"]
+    n = g["nodes"].get(nid, {})
+    st = next((s for s in g["statements"] if s["id"] == nid), None)
+    where = f"{n.get('file', '')}:{n.get('line', '')}" if n.get("file") else ""
+    facts: List[dict] = []
+    insights: List[str] = []
+    if st:
+        pro = [x for x in st["for"] if x["effective"] in ("+", "~")]
+        weak = [x for x in st["for"] if x["effective"] == "o"]
+        con = st["against"]
+        verdict = {"supported": "stands on its evidence", "contested": "has evidence for it and against it",
+                   "contradicted": "is contradicted by its evidence", "unsupported": "has no evidence behind it yet"}
+        head = f"This {n.get('kind', 'statement')} {verdict.get(st['verdict'], st['verdict'])}" + \
+            (f": {_count(len(pro), 'piece')} of evidence for it" if pro else "") + \
+            (f", {_count(len(con), 'thing')} against it" if con else "") + "."
+        how = [f"Against it: {x['why']}." for x in con[:3]] + [f"For it: {x['why']}." for x in pro[:3]]
+        for x in con:
+            w = x["why"]
+            if " says " in w and ", but " in w:
+                insights.append("Update the number in the paper, or rerun what it comes from: " + w.split(", but ")[1] + ".")
+            elif x["kind"] == "contradicts" and g["nodes"].get(x["from"], {}).get("role") == "statement":
+                insights.append(f"{x['from']} and {nid} cannot both stand in the paper: drop or narrow one of them.")
+            elif x["effective"] == "?":
+                insights.append(f"Its support from {x['from']} no longer holds: give it other evidence or narrow it.")
+            elif x["kind"] == "expects":
+                insights.append("A number it expects does not hold any more: change the claim or the experiment.")
+        if not pro and not con:
+            insights.append("Write what backs it under its marker (`relies on:`, `supported by:`, or an `expects:`).")
+        if weak:
+            insights.append(f"{_count(len(weak), 'support')} only rests on what has no evidence yet.")
+        if pro:
+            facts.append({"title": "For it", "summary": ", ".join(x["from"] for x in pro[:6]),
+                          "items": [x["why"] for x in pro]})
+        if con:
+            facts.append({"title": "Against it", "summary": ", ".join(x["from"] for x in con[:6]),
+                          "items": [x["why"] for x in con]})
+    else:
+        backs = [e for e in g["edges"] if e["from"] == nid]
+        metrics = list(n.get("metrics", {}).items())
+        head = f"{n.get('title') or nid}" + (f" ({n.get('kind')})" if n.get("kind") else "") + \
+            (f": {', '.join(f'{k} = {v:.4g}' for k, v in metrics[:3])}" if metrics else "") + "."
+        how = [f"{e['why']}." for e in backs[:4]]
+        if n.get("verdict") in ("contradicted", "contested"):
+            insights.append("Itself contradicted: what it supports is weakened too.")
+        if metrics:
+            facts.append({"title": "Numbers", "summary": _count(len(metrics), "metric"),
+                          "items": [f"{k} = {v:.6g}" for k, v in metrics]})
+        if backs:
+            facts.append({"title": "It backs or contradicts", "summary": ", ".join(e["to"] for e in backs[:6]),
+                          "items": [e["why"] for e in backs]})
+    place = " · ".join(x for x in (where, f"§ {n['section']}" if n.get("section") else "",
+                                   f"owned by {n['owner']}" if n.get("owner") else "") if x)
+    if place:
+        facts.append({"title": "Where", "summary": place, "items": []})
+    said = g.get("notes", {}).get(nid) or []
+    if said:
+        facts.append({"title": "Claude's notes", "summary": said[-1][:120], "items": said})
+    return {"kind": n.get("kind", ""), "title": f"{nid} · {n.get('title', '')}".strip(" ·"), "headline": head,
+            "how": how, "insights": insights[:3], "facts": facts, "inside": "Click to see its evidence chain"}
+
+
+def _web_diagram(S: dict, model: dict, view: str, title: str, aside: str, part: str) -> dict:
     return {"svg": _svg(model, title), "title": title, "aside": aside, "lights": _lights(model),
-            "details": {"b:" + n["id"]: {"title": n["title"], "headline": _why(g, n["id"]).split("\n")[0],
-                                          "how": _why(g, n["id"]).split("\n")[1:], "insights": [], "facts": []}
-                        for n in model["nodes"]},
-            "enter": {"b:" + n["id"]: {"view": view, "part": n["id"]} for n in model["nodes"]},
+            "details": {"b:" + n["id"]: _detail(S, n["id"]) for n in model["nodes"]},
+            "enter": {"b:" + n["id"]: {"view": view, "part": _part(S, n["id"])} for n in model["nodes"]},
             "files": {}, "pick": ("b:" + part) if part else ""}
 
 
@@ -198,12 +338,51 @@ def _statement_notes(g: dict) -> List[dict]:
     return out
 
 
+def studies_model(ctx, S: dict) -> dict:
+    """One box per study: its title, its statements' verdicts, its contradictions; a click opens its Evidence."""
+    nodes = []
+    for x in S["studies"]:
+        T = state(dataclasses.replace(ctx, part=x["id"] + "@"))
+        st = T["graph"]["statements"]
+        bad = sum(1 for s in st if s["verdict"] == "contradicted")
+        mixed = sum(1 for s in st if s["verdict"] == "contested")
+        ok = sum(1 for s in st if s["verdict"] == "supported")
+        status = "removed" if bad else "changed" if mixed else "added" if st else "same"
+        lines = [{"text": f"✓ {ok}  ◐ {mixed}  ✗ {bad}", "status": status}]
+        if T["cmp"].diff["changes"]:
+            lines.append({"text": "changed since your checkpoint", "status": "changed"})
+        nodes.append({"id": x["id"], "col": "study", "title": x["title"], "sub": _count(len(st), "statement"),
+                      "status": status, "type": "component", "lines": lines})
+    return {"nodes": nodes, "edges": [], "columns": [("study", "Studies")]}
+
+
 # ── the views: web ──────────────────────────────────────────────────────────────────────────────────────────────────
 
 def web(ctx) -> dict:
+    out = _web(ctx)
+    S = state(ctx)
+    if S["studies"]:
+        out["nav"] = _nav(S, ctx.view)
+        name = _study_title(S)
+        out["title"] = f"{out.get('title', '')} · {name}" if name and ctx.part else out.get("title", "")
+    return out
+
+
+def _web(ctx) -> dict:
     from . import autoresearch, graph, paperview, review
     S = state(ctx)
-    g, part, view = S["graph"], ctx.part or "", ctx.view
+    g, part, view = S["graph"], S["rest"], ctx.view
+    if view == "research" and S["studies"] and not ctx.part:       # several studies: one box each, first
+        model = studies_model(ctx, S)
+        return {"title": "Research", "headline": f"{len(S['studies'])} studies in this repository: pick one",
+                "diagram": {"svg": _svg(model, "Studies"), "title": "Studies", "aside": "click a study to open it",
+                            "lights": {}, "details": {"b:" + n["id"]: {"title": n["title"], "headline": n["sub"],
+                                                                       "how": [l["text"] for l in n["lines"]],
+                                                                       "insights": [], "facts": []}
+                                                      for n in model["nodes"]},
+                            "enter": {"b:" + n["id"]: {"view": "research", "part": n["id"] + "@"}
+                                      for n in model["nodes"]}, "files": {}, "pick": ""},
+                "sections": []}
     if view == "evidence":
         model = evidence_model(g, part)
         sections = []
@@ -214,11 +393,9 @@ def web(ctx) -> dict:
             sections.append({"title": "Contradictions", "aside": "", "kind": "notes", "items": _notes(bad)})
         sections.append({"title": "Statements", "aside": "worst first", "kind": "notes",
                          "items": _notes(_statement_notes(g))})
-        sections.append({"title": "Interactive graph", "aside": "click a claim to light its evidence chain",
-                         "kind": "frame", "items": [{"src": "/x/research/graph", "height": 760}]})
         return {"title": "Evidence", "headline": g["headline"],
-                "diagram": _web_diagram(model, g, "evidence", f"Evidence of {part}" if part else "Evidence",
-                                        "green supports · red contradicts · click a box to zoom in", part),
+                "diagram": _web_diagram(S, model, "evidence", f"Evidence of {part}" if part else "Evidence",
+                                        "hover a box for what supports and contradicts it · click to zoom in", part),
                 "sections": sections}
     if view == "paper":
         files = [x["path"] for x in S["map"].get("paper", [])]
@@ -274,7 +451,8 @@ def web(ctx) -> dict:
     return {"title": "Research", "headline": c.diff["headline"],
             "diagram": {"svg": svg, "title": "What changed in the research" if c.diff["changes"] else "The research",
                         "aside": f"since {c.base}", "lights": _lights(model), "details": {},
-                        "enter": {"b:" + n["id"]: {"view": "evidence", "part": n["id"]} for n in model["nodes"]},
+                        "enter": {"b:" + n["id"]: {"view": "evidence", "part": _part(S, n["id"])}
+                                  for n in model["nodes"]},
                         "files": {}, "pick": ""},
             "sections": sections}
 
@@ -285,16 +463,24 @@ def pane(ctx) -> dict:
     from system_diff import canvas
     from . import page as rpage
     S = state(ctx)
-    g, part, width = S["graph"], ctx.part or "", max(40, ctx.width)
+    g, part, width = S["graph"], S["rest"], max(40, ctx.width)
+    name = _study_title(S)
+    if ctx.view == "research" and S["studies"] and not ctx.part:   # several studies: pick one
+        p = canvas.Page(width)
+        p.heading("Studies", "Enter opens one")
+        model = studies_model(ctx, S)
+        grid = canvas.layered(model["nodes"], [], model["columns"], width=width, zoom=ctx.zoom)
+        p.grid(grid, slot=1, on={"b:" + n["id"]: {"enter": {"zoom": n["id"] + "@"}} for n in model["nodes"]})
+        return p.json(view="research", part="")
     if ctx.view == "evidence":
         p = canvas.Page(width)
-        p.heading("Evidence" + (f" of {part}" if part else ""), g["headline"])
+        p.heading("Evidence" + (f" of {part}" if part else "") + (f" · {name}" if name else ""), g["headline"])
         model = evidence_model(g, part)
         grid = canvas.layered(model["nodes"], model["edges"], model["columns"], width=width, zoom=ctx.zoom)
         for n in model["nodes"]:
             grid.details["b:" + n["id"]] = canvas.detail_rows(_why(g, n["id"]).replace("\n", " · "), p.width, "muted",
                                                               (n["id"] + "  ", "bold"))
-        p.grid(grid, slot=2, on={"b:" + n["id"]: {"enter": {"zoom": n["id"]}} for n in model["nodes"]})
+        p.grid(grid, slot=2, on={"b:" + n["id"]: {"enter": {"zoom": _part(S, n["id"])}} for n in model["nodes"]})
         p.blank()
         p.add(["+ supported  ~ contested  − contradicted · dashed: contradicts", "muted"])
         for c in g["conflicts"]:
@@ -302,27 +488,28 @@ def pane(ctx) -> dict:
         for s in _statement_notes(g):
             if s["status"] in ("removed", "changed"):
                 p.para(f"{s['sign']} {s['text']}: {s['why']}", "attention" if s["status"] == "changed" else "removed")
-        return p.json(view="evidence", part=part)
+        return p.json(view="evidence", part=ctx.part or "")
     if ctx.view == "research" and not part:          # what changed, on the research map, then worth a look
         from . import graph
         c = S["cmp"]
         model = graph.diff_graph(c.diff, c.before, c.after, c.cfg) or graph.map_graph(c.after, c.cfg)
         p = canvas.Page(width)
-        p.heading("What changed in the research" if c.diff["changes"] else "The research", f"since {c.base}")
+        p.heading(("What changed in the research" if c.diff["changes"] else "The research") +
+                  (f" · {name}" if name else ""), f"since {c.base}")
         cols = [tuple(x) for x in model["columns"]]
         grid = canvas.layered(model["nodes"], model["edges"], cols, width=width, zoom=ctx.zoom)
-        p.grid(grid, slot=1, on={"b:" + n["id"]: {"enter": {"zoom": n["id"]}} for n in model["nodes"]})
+        p.grid(grid, slot=1, on={"b:" + n["id"]: {"enter": {"zoom": _part(S, n["id"])}} for n in model["nodes"]})
         rp = rpage.Page("now", "", width)
         rpage.view_now(S, rp)
         for row in rp.rows[1:]:                       # its first row is the activity line: the heading says it
             p.add(*[r[:2] for r in row]) if row else p.blank()
-        return p.json(view="research", part="")
+        return p.json(view="research", part=ctx.part or "")
     # the others: research-diff's own rows, from the state read once (zoomed in: the node's evidence chain)
     view = {"research": "now", "paper": "paper", "auto": "auto"}.get(ctx.view, "now")
     rp = rpage.Page("now" if part else view, part, width)
     {"now": rpage.view_now, "paper": rpage.view_paper, "auto": rpage.view_auto}["now" if part else view](S, rp)
     data = rp.data()
-    data["view"], data["part"] = ctx.view, part
+    data["view"], data["part"] = ctx.view, ctx.part or ""
     return data
 
 
@@ -336,6 +523,9 @@ def route(ctx, method: str, path: str, query: Dict[str, str], body: bytes) -> Tu
     if method == "GET" and path == "file":
         S = state(ctx)
         f = (query.get("path") or "").replace("\\", "/").lstrip("/")
+        for x in S.get("studies", []):          # the study whose file it is
+            if f.startswith(x["path"].rstrip("/") + "/"):
+                S = state(dataclasses.replace(ctx, part=x["id"] + "@"))
         if ".." in f.split("/") or f not in paperview.research_files(S["map"]):
             return 404, html, b"<p>Only the research's own files open here.</p>"
         st = paperview.summarize(S["root"], f, S["map"], S["graph"])     # in the engine's process: a thread

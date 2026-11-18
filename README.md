@@ -165,6 +165,13 @@ diagrams. Its tabs sit after system-diff's own:
 | Paper | `p` | the paper section by section, numbers checked, summaries and the review; each paper file opened beside its outline |
 | Auto-research | `u` | servers, the campaign, its iterations and their logs |
 
+**Several papers in one repository** (a folder per study: `1_tradeoff_reward_model_eval/`, `2_behavioral_field/`,
+…, git submodules included) are read study by study, each with its own ids (every paper has its C1), its own diff
+and evidence. The Research tab opens on one box per study; a click opens it, and every tab follows. Name them in
+research-diff.toml (`studies = ["1_tradeoff_reward_model_eval", "2_behavioral_field"]`) or let research-diff find
+every top-level folder that holds a paper. Hovering a box of the Evidence diagram says what it is, what supports and
+what contradicts it, what to do about it, and where it is.
+
 The research is read from the files system-diff's engine already holds in memory, once per version of the working
 tree, so the tabs answer in milliseconds. research-diff then starts no web server and no pane of its own (`/research-diff`
 says where its tabs are), and what auto-research asks of Claude goes through system-diff's pane.
@@ -259,6 +266,11 @@ relies on (owned by others), the contradictions already open on its nodes, and t
 - Each agent hears the nodes it owns and everything upstream of them in the evidence graph, and its unread messages
   reach it with its next tool result (the PostToolUse hook), without waiting on anyone.
 - The Agents tab and the graph's *across agents* list show where one agent's work contradicts another's.
+
+**Agents worth keeping.** A role that comes back across plans (a results writer, a reviewer, a tester) or keeps
+finishing its work is suggested for keeping (`saved_agents`, the Agents tab), and Claude saves it as a Claude Code
+subagent (`save_agent`: `.claude/agents/<name>.md`, shared through git), so later sessions and teams start it by
+name, and a new plan reuses it when a role matches.
 
 ```sh
 research-diff agents plan "write the batch-size paper"     # the same from a terminal: the briefs

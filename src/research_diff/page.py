@@ -366,6 +366,14 @@ def view_agents(L: dict, p: Page) -> None:
             p.row(("   ✗ its ", "removed"), (c["why"], "removed"), (f"  → {c['owners'][1]}'s", "muted"))
         for c in a["contradicted_by"]:
             p.row(("   ✗ contradicted: ", "removed"), (c["why"], "removed"), (f"  ← {c['owners'][0]}'s", "muted"))
+    lib, keep = agents.library(root), agents.worth_keeping(root)
+    if lib or keep:
+        p.heading("Saved agents", "reused by name in later plans and sessions")
+        for a in lib:
+            p.row(("  ◆ ", "good"), (a["name"], "bold"), (f"  {a['description'][:90]}", "muted"),
+                  (f"  · {a['scope']} · planned {a['planned']}× · finished {a['finished']}×", "muted"))
+        for k in keep:
+            p.row(("  ◇ ", "attention"), (k["name"], "bold"), (f"  worth keeping: {k['why']}", "attention"))
     msgs = s["messages"][-12:]
     if msgs:
         p.heading("The bus", "what each agent changed, on the topics of the nodes it touched")

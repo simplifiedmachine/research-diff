@@ -238,13 +238,17 @@ def _resolve(base: str, ref: str, files: set) -> Optional[str]:
     return None
 
 
-def extract(source, cfg: Dict[str, Any]) -> dict:
-    """The research map of one source (a commit, a snapshot of the working tree, or a folder)."""
+def extract(source, cfg: Dict[str, Any], scope: Optional[Tuple[str, List[str]]] = None) -> dict:
+    """The research map of one source (a commit, a snapshot of the working tree, or a folder). `scope`: one study of
+    a repository holding several, as (its folder, the other studies' folders): its files and the shared ones."""
     kinds = cfg["kinds"]
     def_rx = _def_rx(kinds)
     skip = segment_rx(cfg["skip"])
     ignore = [glob_rx(p) for p in cfg.get("ignore", [])]
     files = [f for f in source.files if not skip.search(f) and not any(r.match(f) for r in ignore)]
+    if scope:
+        mine, others = scope[0].rstrip("/") + "/", [o.rstrip("/") + "/" for o in scope[1]]
+        files = [f for f in files if f.startswith(mine) or not any(f.startswith(o) for o in others)]
     fileset = set(source.files)
     compiled: Dict[tuple, list] = {}
 

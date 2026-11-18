@@ -101,18 +101,37 @@ def prompt(path: str, chunks: List[dict]) -> str:
             f"none\"}}}}. Use exactly these titles as keys: {json.dumps(titles)}\n\n{body}")
 
 
+def _norm(title: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", paper.plain(title).lower()).strip()
+
+
+WHY: Dict[str, str] = {}
+
+
 def parse(answer: str, chunks: List[dict], by: str) -> Optional[dict]:
+    """The summary in the answer, its sections matched to the file's (titles compared loosely: case, punctuation,
+    LaTeX); None, with the reason in WHY["last"], when it has none."""
     m = re.search(r"\{.*\}", answer or "", re.S)
     if not m:
+        WHY["last"] = "its answer was not JSON" + (" (it was cut off)" if (answer or "").count("{") else "")
         return None
     try:
         data = json.loads(m.group(0))
-    except ValueError:
+    except ValueError as exc:
+        WHY["last"] = f"its answer was not valid JSON ({str(exc)[:80]}); it may have been cut off"
         return None
-    titles = {c["title"] for c in chunks}
-    secs = {t: {k: str(v.get(k, ""))[:400] for k in ("says", "claims", "watch")}
-            for t, v in (data.get("sections") or {}).items() if t in titles and isinstance(v, dict)}
+    by_norm = {_norm(c["title"]): c["title"] for c in chunks}
+    given = data.get("sections") or {}
+    if isinstance(given, list):         # [{"title": ..., "says": ...}] instead of {title: {...}}
+        given = {str(x.get("title", "")): x for x in given if isinstance(x, dict)}
+    secs = {}
+    for t, v in given.items():
+        title = by_norm.get(_norm(str(t)))
+        if title and isinstance(v, dict):
+            secs[title] = {k: str(v.get(k, ""))[:400] for k in ("says", "claims", "watch")}
     if not secs:
+        WHY["last"] = "its answer named none of this file's sections" + \
+            (f" (it named: {', '.join(list(map(str, given))[:4])})" if given else "")
         return None
     return {"file": str(data.get("file", ""))[:800], "sections": secs, "by": by, "at": time.time()}
 
@@ -123,8 +142,25 @@ def _ask(root: Path, user: str) -> Optional[tuple]:
         return (got, "test") if got else None
     if objectives.off() or os.environ.get("PYTEST_CURRENT_TEST"):
         return None
-    from system_diff.narrate import complete
-    return complete(user, SYSTEM, root, {}, timeout=180, limit=12000)
+    from system_diff import narrate
+    got = narrate.complete(user, SYSTEM, root, {}, timeout=240, limit=80000)
+    if not got:
+        said = (getattr(narrate, "LAST_ERROR", None) or [""])[0]
+        WHY["last"] = said.removeprefix("system-diff: ") if said else \
+            "no LLM answered from here (research-diff asks Claude Code's gateway, one set in your shell, or the " \
+            "`claude` CLI)"
+    return got
+
+
+def _why_file(root: Path, blob: str) -> Path:
+    return _file(root, blob).with_suffix(".why")
+
+
+def failed_why(root: Path, blob: str) -> str:
+    try:
+        return _why_file(root, blob).read_text(encoding="utf-8")
+    except OSError:
+        return ""
 
 
 def summarize(root: Path, path: str, bp: dict, graph: Optional[dict] = None, wait: bool = False) -> dict:
@@ -140,11 +176,13 @@ def summarize(root: Path, path: str, bp: dict, graph: Optional[dict] = None, wai
         if _JOBS.get(o["blob"], 0) > 0 and not wait:
             return {"state": "summarizing"}
         if _JOBS.get(o["blob"], 0) < 0 and time.time() + _JOBS[o["blob"]] < 300 and not wait:
-            return {"state": "failed", "why": "the LLM gave no usable answer; tried again in a few minutes"}
+            return {"state": "failed", "why": (failed_why(root, o["blob"]) or "the LLM gave no usable answer")
+                    + "; tried again in a few minutes"}
         _JOBS[o["blob"]] = time.time()
 
     def job() -> bool:
         ok = False
+        WHY.pop("last", None)
         try:
             got = _ask(root, prompt(path, o["chunks"]))
             parsed = parse(got[0], o["chunks"], got[1]) if got else None
@@ -153,13 +191,21 @@ def summarize(root: Path, path: str, bp: dict, graph: Optional[dict] = None, wai
                 f = _file(root, o["blob"])
                 f.write_text(json.dumps(parsed, ensure_ascii=False), encoding="utf-8")
                 ok = True
+        except Exception as exc:  # noqa: BLE001 - a summary is a convenience: keep why it failed
+            WHY["last"] = f"{type(exc).__name__}: {str(exc)[:160]}"
         finally:
+            if not ok:
+                try:
+                    _why_file(root, o["blob"]).write_text(WHY.get("last") or "the LLM gave no usable answer",
+                                                         encoding="utf-8")
+                except OSError:
+                    pass
             with _LOCK:
                 _JOBS[o["blob"]] = 0 if ok else -time.time()
         return ok
     if wait:
         return {"state": "done", **summary(root, o["blob"])} if job() else \
-            {"state": "failed", "why": "no LLM answered, or its answer did not fit the file's sections"}
+            {"state": "failed", "why": failed_why(root, o["blob"]) or "the LLM gave no usable answer"}
     threading.Thread(target=job, daemon=True, name="research-diff-summary").start()
     return {"state": "summarizing"}
 

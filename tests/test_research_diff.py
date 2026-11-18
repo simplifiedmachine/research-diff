@@ -61,7 +61,8 @@ def test_a_logged_result_is_on_the_map_and_in_the_next_diff(repo, monkeypatch):
     assert {t.name for t in asyncio.run(mcp_server.build().list_tools())} == {
         "research_map", "research_diff", "research_evidence", "explain", "log_result", "plan_agents", "claim",
         "publish", "inbox", "research_objectives", "checkpoint", "paper_outline", "review_paper", "point_to", "note",
-        "autoresearch_status", "autoresearch_submit", "autoresearch_finish", "autoresearch_control"}
+        "autoresearch_status", "autoresearch_submit", "autoresearch_finish", "autoresearch_control",
+        "saved_agents", "save_agent"}
     got = mcp_server.tool_log(repo, "E1", {"acc": 0.9}, "Batch 32 again", supports=["H1"])
     assert got == {"recorded": "R1", "in": "research/log.md"}
     d = mcp_server.tool_diff(repo, "HEAD")
