@@ -48,13 +48,15 @@ def test_the_evidence_tab_is_system_diffs_diagram_in_the_evidence_graphs_words(s
     svg = page["diagram"]["svg"]
     assert svg.startswith("<svg") and 'class="sd-arch"' in svg                    # system-diff's renderer
     assert "contradicted" in svg and "contradicts" in svg
-    assert "b:C1" in page["diagram"]["enter"] and page["diagram"]["enter"]["b:C1"] == {"view": "evidence", "part": "C1"}
+    assert page["diagram"]["files"]["b:C1"] == {"path": "paper/main.tex", "line": 7, "end": 10}   # a click opens it
+    assert page["diagram"]["files"]["b:R2"]["path"] == "notes/results.md"          # a result in the notes, too
+    assert set(page["diagram"]["enter"]).isdisjoint(page["diagram"]["files"])       # the rest zoom into their chain
     assert not any(s["kind"] == "frame" for s in page["sections"])                  # one graph: the diagram
     card = page["diagram"]["details"]["b:C1"]
     assert {"title", "headline", "how", "insights", "facts"} <= set(card)
     assert "The paper contradicts itself: C2 contradicts C1" in json.dumps(page["sections"])
     zoomed = x.web(ctx(study, "evidence", "C2"))
-    assert "b:C2" in zoomed["diagram"]["enter"] and "b:R2" not in zoomed["diagram"]["enter"]   # only C2's chain
+    assert "b:C2" in zoomed["diagram"]["files"] and "b:R2" not in zoomed["diagram"]["enter"]   # only C2's chain
 
 
 def test_the_pane_draws_boxes_and_lines(study):
@@ -98,7 +100,10 @@ def test_a_repository_with_several_papers_is_read_study_by_study(repo, files):
     assert two["graph"]["nodes"]["C1"]["title"] == "Batch size does not matter"
     assert "C2" not in one["graph"]["nodes"] and two["graph"]["conflicts"]
     ev = x.web(ctx(repo, "evidence", "2_lr@", live=live))
-    assert ev["diagram"]["enter"]["b:C1"] == {"view": "evidence", "part": "2_lr@C1"}
+    assert ev["diagram"]["files"]["b:C1"]["path"] == "2_lr/paper/main.tex"
+    assert ev["diagram"]["files"]["b:R1"]["path"] == "2_lr/notes.md"
+    zoom = x.web(ctx(repo, "evidence", "2_lr@C1", live=live))                      # a zoom keeps the study
+    assert zoom["diagram"]["pick"] == "b:C1" and [n["active"] for n in zoom["nav"]] == [False, True]
     assert [n["active"] for n in ev["nav"]] == [False, True]
     card = ev["diagram"]["details"]["b:C1"]
     assert card["headline"].startswith("This claim") and any(f["title"] == "Against it" for f in card["facts"])
@@ -120,3 +125,24 @@ def test_its_own_pages_and_the_auto_research_controls(study):
     assert x.route(c, "POST", "auto/start", {}, b'{"goal": ""}')[0] in (200, 400)
     assert x.route(c, "GET", "nothing", {}, b"")[0] == 404
     assert x.file_ok("paper/main.tex") and not x.file_ok(".env")
+
+
+def test_the_paper_opens_in_system_diffs_viewer_by_sections(study):
+    c = ctx(study, "paper")
+    page = x.web(c)
+    assert not any(s["kind"] == "frame" for s in page["sections"])
+    secs = page["diagram"]["files"]
+    assert {v["path"] for v in secs.values()} == {"paper/main.tex"}
+    assert [v["line"] for v in secs.values()] == sorted(v["line"] for v in secs.values())
+    got = x.outline(c, "paper/main.tex", (study / "paper/main.tex").read_text())
+    names = [ch["name"] for ch in got["outline"]["chunks"]]
+    assert "§ Results" in names and any(n.startswith("C1 ") for n in names)
+    assert got["summary"]["state"] in ("off", "summarizing", "failed", "done")
+
+
+def test_claude_can_name_research_blocks_and_find_their_source(study):
+    c = ctx(study, "")
+    assert x.resolve(c, "C1") == {"id": "C1", "file": "paper/main.tex:7"}
+    assert x.resolve(c, "`b:C2`")["id"] == "C2" and x.resolve(c, "Z9") is None
+    src = x.source(ctx(study, "", "C1"), "C1")
+    assert src["files"] == [{"path": "paper/main.tex", "line": 7}] and "marker" in src["config"]["change"]

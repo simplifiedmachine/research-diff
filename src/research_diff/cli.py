@@ -298,6 +298,10 @@ def parser() -> argparse.ArgumentParser:
     r = sub.add_parser("readme", help="rewrite the README's research section")
     r.add_argument("--check", action="store_true")
     sub.add_parser("doctor", help="why research-diff is quiet, slow or wrong here")
+    ap_ = sub.add_parser("app", help="system-diff's Studio: every project's page (research-diff's tabs included) and a "
+                                     "Claude Code session beside it")
+    ap_.add_argument("--port", type=int, default=8765)
+    ap_.add_argument("--open", action="store_true", help="open it in the browser too")
     sub.add_parser("hub", help="the address that lists every project of system-diff and research-diff")
     au = sub.add_parser("auto", help="auto-research: launch, check, collect and improve experiments on your servers")
     au.add_argument("rest", nargs="*", help="start GOAL | pause | resume | stop | status | runner | "
@@ -427,6 +431,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
     if args.cmd == "readme":
         return readme.run(root, args.config, args.check)
+    if args.cmd == "app":
+        try:
+            from system_diff import cli as sd
+        except ImportError:
+            print('research-diff app is system-diff\'s Studio: pip install "system-diff[app]"', file=sys.stderr)
+            return 1
+        return sd.main(["app", "--port", str(args.port)] + (["--open"] if args.open else []))
     if args.cmd == "watch":
         from . import host
         if host.merged() and not args.standalone:      # one page for both: system-diff's, with research-diff's tabs

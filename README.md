@@ -125,7 +125,7 @@ Three steps, in a terminal (Python 3.11+). The newest work is on the main branch
 programs open.
 
 ```sh
-python -m pip install -U "system-diff[mcp] @ git+https://github.com/simplifiedmachine/system-diff@main"
+python -m pip install -U "system-diff[mcp,app] @ git+https://github.com/simplifiedmachine/system-diff@main"
 python -m pip install -U "research-diff[mcp] @ git+https://github.com/simplifiedmachine/research-diff@main"
 ```
 
@@ -146,9 +146,17 @@ cd path/to/your/research-repo
 system-diff watch          # or research-diff watch: the same page
 ```
 
+Or the Studio, every project and a Claude Code session beside it in one window:
+
+```sh
+system-diff app --open     # or research-diff app --open
+```
+
 Open the address it prints (http://localhost:8765/). After system-diff's tabs come research-diff's: **Research**
 (what changed since your checkpoint, and one box per study when the repository holds several papers), **Evidence**,
-**Paper** and **Auto-research**. The page follows the files as they change, yours and Claude's. To mark what you have
+**Paper** (the paper section by section; a click opens it in the viewer, outlined by sections with your LLM's summary
+of each) and **Auto-research**. In Evidence, a click on a claim, a finding or a result in the notes opens its file at
+that paragraph. The page follows the files as they change, yours and Claude's. To mark what you have
 seen, tell Claude "mark it as seen" (or run `research-diff checkpoint`): the next diff starts there.
 
 Check the setup any time with `research-diff doctor`.

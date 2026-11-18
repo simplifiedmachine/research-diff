@@ -20,7 +20,6 @@ import os
 import threading
 from pathlib import Path
 from typing import Dict, List, Tuple
-from urllib.parse import quote
 
 NAME = "research"
 VIEWS = [("research", "Research", "s"), ("evidence", "Evidence", "e"), ("paper", "Paper", "p"),
@@ -315,11 +314,45 @@ def _detail(S: dict, nid: str) -> dict:
             "how": how, "insights": insights[:3], "facts": facts, "inside": "Click to see its evidence chain"}
 
 
+def _span(root: Path, path: str, line: int) -> int:
+    """The last line of the paragraph a marker starts at (its comment lines and its text), for the viewer to light."""
+    try:
+        lines = (Path(root) / path).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return line
+    end = max(line, 1)
+    if path.endswith((".md", ".markdown")):         # a Markdown marker: its heading down to the next heading
+        while end < len(lines) and not lines[end].lstrip().startswith("#"):
+            end += 1
+        while end > line and not lines[end - 1].strip():
+            end -= 1
+        return end
+    while end < len(lines) and lines[end].strip():
+        end += 1
+    return end
+
+
+def _where(S: dict, nid: str) -> dict:
+    """{"path", "line", "end"} of a node written in a notes or paper file; {} for a number in a results file."""
+    n = S["graph"]["nodes"].get(nid, {})
+    f, line = n.get("file", ""), int(n.get("line") or 0)
+    if not f or not line or not f.endswith((".tex", ".md", ".markdown")):
+        return {}
+    return {"path": f, "line": line, "end": _span(S["root"], f, line)}
+
+
 def _web_diagram(S: dict, model: dict, view: str, title: str, aside: str, part: str) -> dict:
-    return {"svg": _svg(model, title), "title": title, "aside": aside, "lights": _lights(model),
-            "details": {"b:" + n["id"]: _detail(S, n["id"]) for n in model["nodes"]},
-            "enter": {"b:" + n["id"]: {"view": view, "part": _part(S, n["id"])} for n in model["nodes"]},
-            "files": {}, "pick": ("b:" + part) if part else ""}
+    files = {"b:" + n["id"]: w for n in model["nodes"] if (w := _where(S, n["id"]))}
+    details = {}
+    for n in model["nodes"]:
+        d = _detail(S, n["id"])
+        d["inside"] = "Click to open it in " + files["b:" + n["id"]]["path"] if "b:" + n["id"] in files \
+            else "Click to see its evidence chain"
+        details["b:" + n["id"]] = d
+    return {"svg": _svg(model, title), "title": title, "aside": aside, "lights": _lights(model), "details": details,
+            "enter": {"b:" + n["id"]: {"view": view, "part": _part(S, n["id"])} for n in model["nodes"]
+                      if "b:" + n["id"] not in files},           # a click opens the file; Enter in the pane still zooms
+            "files": files, "pick": ("b:" + part) if part else ""}
 
 
 def _notes(items: List[dict]) -> List[dict]:
@@ -399,34 +432,49 @@ def _web(ctx) -> dict:
                 "sections": sections}
     if view == "paper":
         files = [x["path"] for x in S["map"].get("paper", [])]
-        sections = []
+        nodes, where, details, sections = [], {}, {}, []
         for path in files:
             o = paperview.outline(S["root"], path, S["map"], g)
             summ = o.get("summary") or {}
-            items = []
             for c in o["chunks"]:
                 bad = [n for n in c["numbers"] if n["sign"] == "-"]
                 ok = sum(1 for n in c["numbers"] if n["sign"] == "+")
+                verdicts = [st["verdict"] for st in c["statements"]]
+                worst = "removed" if bad or "contradicted" in verdicts else "changed" if "contested" in verdicts \
+                    else "added" if c["statements"] or ok else "same"
+                bid = f"sec:{path}:{c['line']}"
+                lines = [{"text": f"{st['id']} {SIGN.get(st['verdict'] or 'unsupported', '·')} {st['verdict'] or st['kind']}",
+                          "status": STATUS.get(st["verdict"] or "unsupported", "same")} for st in c["statements"][:3]]
+                if ok or bad:
+                    lines.append({"text": f"numbers: ✓ {ok}" + (f"  ✗ {len(bad)} stale" if bad else ""),
+                                  "status": "removed" if bad else "added"})
+                nodes.append({"id": bid, "col": path, "title": "§ " + c["title"], "status": worst, "type": "component",
+                              "sub": f"lines {c['line']}-{c['end']}", "lines": lines})
+                where["b:" + bid] = {"path": path, "line": c["line"], "end": c["end"]}
                 cs = (summ.get("sections") or {}).get(c["title"], {})
-                why = " ".join(f"✦ {cs[k]}" for k in ("says", "watch") if cs.get(k)) or \
-                    ", ".join(f"{st['id']} {st['verdict'] or st['kind']}" for st in c["statements"])
-                items.append({"sign": "✗" if bad else "§", "status": "removed" if bad else "same",
-                              "text": f"§ {c['title']}" + (f" · ✓ {ok} numbers match" if ok else "")
-                              + (f" · {len(bad)} stale" if bad else ""), "why": "; ".join(n["why"] for n in bad[:2]) or why})
-            sections.append({"title": path, "aside": "✦ summarised" if summ else "", "kind": "notes",
-                             "items": _notes(items)})
-            sections.append({"title": f"{path}, opened", "aside": "outline beside the text, stale numbers in red",
-                             "kind": "frame", "items": [{"src": "/x/research/file?path=" + quote(path), "height": 760}]})
+                details["b:" + bid] = {
+                    "title": "§ " + c["title"], "headline": cs.get("says") or f"{len(c['statements'])} statements",
+                    "how": [x for x in (cs.get("claims"),) if x], "insights": [x for x in (cs.get("watch"),) if x]
+                    + [n["why"] for n in bad[:3]], "inside": f"Click to open {path} here",
+                    "facts": [{"title": "Statements", "summary": ", ".join(st["id"] for st in c["statements"]) or "none",
+                               "items": [f"{st['id']} {st['title']}" for st in c["statements"]]}]
+                    + ([{"title": "Numbers", "summary": f"{ok} match, {len(bad)} stale",
+                         "items": [n["why"] for n in c["numbers"]]}] if c["numbers"] else [])}
         rv = S["review"]
         if rv.get("findings"):
             sections.append({"title": "Review", "aside": review.headline(rv), "kind": "notes", "items": _notes(
                 [{"sign": "✦", "status": "removed" if f["kind"] == "contradiction" else "changed",
                   "text": f["why"], "why": " / ".join(f"“{q}”" for q in f["quotes"][:2])} for f in rv["findings"]])})
+        model = {"nodes": nodes, "edges": [], "columns": [(f, f) for f in files]}
+        diagram = {"svg": _svg(model, "Paper", legend=False), "title": "The paper, section by section",
+                   "aside": "hover a section for its summary · click to open it", "lights": {}, "details": details,
+                   "enter": {}, "files": where, "pick": ""} if nodes else {}
         return {"title": "Paper", "headline": f"{len(files)} paper file{'' if len(files) == 1 else 's'} · "
-                + (review.headline(rv) or "no review yet: ask Claude to review the paper"), "diagram": {},
-                "sections": sections or [{"title": "No paper yet", "aside": "", "kind": "lines", "items": [
-                    {"text": "research-diff reads the files the `paper` globs of research-diff.toml name.",
-                     "style": "muted"}]}]}
+                + (review.headline(rv) or "no review yet: ask Claude to review the paper"), "diagram": diagram,
+                "sections": sections or ([] if nodes else [{"title": "No paper yet", "aside": "", "kind": "lines",
+                                                            "items": [{"text": "research-diff reads the files the "
+                                                                       "`paper` globs of research-diff.toml name.",
+                                                                       "style": "muted"}]}])}
     if view == "auto":
         c = autoresearch.campaign(S["root"])
         head = f"Auto-research {c['state']}: {c['goal']}" if c else "Auto-research is off"
@@ -547,6 +595,90 @@ def route(ctx, method: str, path: str, query: Dict[str, str], body: bytes) -> Tu
 # research-diff's plugin, and system-diff's app attaches it to the sessions it starts (MCP_SERVER below), so code-only
 # repositories never carry research tools, and neither tool's server depends on the other's.
 MCP_SERVER = {"command": "research-diff", "args": ["mcp"]}
+
+
+def applies(root) -> bool:
+    """Whether a repository has research for research-diff to read (its server is worth attaching to a session
+    there): a research-diff.toml, a [tool.research-diff] table, or a LaTeX paper among its files. Cheap: no reading."""
+    root = Path(root)
+    if (root / "research-diff.toml").is_file():
+        return True
+    try:
+        if "[tool.research-diff]" in (root / "pyproject.toml").read_text(encoding="utf-8", errors="replace"):
+            return True
+    except OSError:
+        pass
+    from system_diff.sources import git
+    try:
+        return bool(git("ls-files", "-z", "--", "*.tex", cwd=root).strip("\0"))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _state_for_file(ctx, path: str) -> dict:
+    """The state of the study a file belongs to."""
+    S = state(ctx)
+    for x in S.get("studies", []):
+        if path.startswith(x["path"].rstrip("/") + "/"):
+            return state(dataclasses.replace(ctx, part=x["id"] + "@"))
+    return S
+
+
+def outline(ctx, path: str, text: str) -> dict:
+    """system-diff's file viewer, for a paper or notes file: its sections (and the statements in each) as the
+    outline, and the LLM's summary of each section (made in the engine's process the first time, kept by version)."""
+    from . import paperview
+    S = _state_for_file(ctx, path)
+    o = paperview.outline(S["root"], path, S["map"], S["graph"])
+    chunks = []
+    for c in o["chunks"]:
+        chunks.append({"line": c["line"], "end": c["end"], "depth": max(0, c["level"] - 1), "qual": c["title"],
+                       "name": "§ " + c["title"], "kind": "section"})
+        for st in c["statements"]:
+            ln = int(st.get("line") or c["line"])
+            chunks.append({"line": ln, "end": _span(S["root"], path, ln), "depth": c["level"],
+                           "qual": f"{c['title']} / {st['id']}", "name": f"{st['id']} {st['title'][:60]}",
+                           "kind": st.get("verdict") or st["kind"]})
+    got = paperview.summarize(S["root"], path, S["map"], S["graph"])
+    if got["state"] == "done":
+        summary = {"state": "done", "file": got.get("file", ""), "by": got.get("by", ""),
+                   "chunks": {t: {"what": v.get("says", ""), "how": v.get("claims", ""), "watch": v.get("watch", "")}
+                              for t, v in (got.get("sections") or {}).items()}}
+    else:
+        summary = {"state": got["state"], "why": got.get("why", "")}
+    return {"outline": {"chunks": chunks}, "summary": summary}
+
+
+def _find(ctx, text: str):
+    from . import studies
+    raw = str(text or "").strip().strip("`")
+    raw = raw[2:] if raw.startswith("b:") else raw
+    sid, nid = studies.split(raw)
+    S = state(dataclasses.replace(ctx, part=(sid + "@") if sid else (ctx.part or "")))
+    return S, nid
+
+
+def resolve(ctx, text: str):
+    """research-diff's ids (C1, R2, tab:main, 2_behavioral_field@C1) for point_to, note and answers' links."""
+    S, nid = _find(ctx, text)
+    if nid not in S["graph"]["nodes"]:
+        return None
+    w = _where(S, nid)
+    return {"id": nid, "file": f"{w['path']}:{w['line']}" if w else ""}
+
+
+def source(ctx, block: str):
+    """Where a research-diff block comes from (ui_source): the file and line of its marker; what to change."""
+    S, nid = _find(ctx, ctx.part or block)
+    n = S["graph"]["nodes"].get(nid) or S["map"]["nodes"].get(nid)
+    if not n:
+        return None
+    f = n.get("file") or (n.get("files") or [""])[0]
+    line = int(n.get("line") or 0)
+    return {"files": [{"path": f, "line": line}] if f else [],
+            "config": {"in": f or "the research's files",
+                       "change": "edit the marker lines under its definition (status:, relies on:, supports:, "
+                                 "contradicts:, expects:, by:) or the text it stands for; the graphs redraw from them"}}
 
 
 def file_ok(path: str) -> bool:

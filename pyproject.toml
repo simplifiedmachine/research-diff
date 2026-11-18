@@ -19,7 +19,7 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 # Its pictures, snapshots and live page are system-diff's (same author, no dependencies of its own), pinned.
-dependencies = ["system-diff>=0.8.0"]
+dependencies = ["system-diff>=0.10.0.dev6"]
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.10"]
