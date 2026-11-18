@@ -246,16 +246,22 @@ def extract(source, cfg: Dict[str, Any], scope: Optional[Tuple[str, List[str]]] 
     skip = segment_rx(cfg["skip"])
     ignore = [glob_rx(p) for p in cfg.get("ignore", [])]
     files = [f for f in source.files if not skip.search(f) and not any(r.match(f) for r in ignore)]
-    if scope:
-        mine, others = scope[0].rstrip("/") + "/", [o.rstrip("/") + "/" for o in scope[1]]
-        files = [f for f in files if f.startswith(mine) or not any(f.startswith(o) for o in others)]
+    if scope:                     # one study: its files (results/<study>/... too), and those no study claims
+        from .studies import belongs
+        mine, others = scope[0], scope[1]
+        files = [f for f in files if belongs(f, mine) or not any(belongs(f, o) for o in others)]
     fileset = set(source.files)
     compiled: Dict[tuple, list] = {}
+
+    from .config import DEFAULTS
+    own = {k: [f"{pre}{scope[0].strip('/')}/{g}" for pre in ("", "*/") for g in DEFAULTS[k]]   # results/<study>/ too
+           for k in ("notes", "paper", "configs", "scripts")} if scope else {}
 
     def pick(globs) -> List[str]:          # each kind's files, worked out once (globs compiled once)
         key = tuple(globs)
         if key not in compiled:
-            rxs = [glob_rx(g) for g in globs]
+            kind = next((k for k in own if list(cfg[k]) == list(globs)), None)
+            rxs = [glob_rx(g) for g in list(globs) + own.get(kind, [])]   # a study's own files, whatever the globs
             compiled[key] = [f for f in files if any(r.match(f) for r in rxs)]
         return compiled[key]
     config_files = set(pick(cfg["configs"]))

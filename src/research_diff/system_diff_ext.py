@@ -111,12 +111,19 @@ def state(ctx) -> dict:
     cfg = config.load(src, root)
     found = studies.detect(src.files, cfg)
     sid, rest = studies.split(ctx.part or "")
+    if sid in (ONE, SPLIT):            # the person's switch, in the studies list: remembered for the repository
+        studies.set_split(root, sid == SPLIT)
+        sid = ""
+    split_off = bool(found) and not studies.split_on(root)
+    if split_off:
+        found = []
     if found and sid not in {x["id"] for x in found}:
         sid = found[0]["id"]                 # the first study, until one is picked
     if not found:
         sid = ""
     out = _study_state(ctx, src, ident, root, cfg, found, sid)
-    return {**out, "studies": found, "study": sid, "rest": rest}
+    return {**out, "studies": found, "study": sid, "rest": rest, "split_off": split_off,
+            "could_split": len(studies.detect(src.files, cfg))}
 
 
 def _study_state(ctx, src, ident, root: Path, cfg: dict, found: List[dict], sid: str) -> dict:
@@ -166,10 +173,20 @@ def _part(S: dict, node: str = "") -> str:
     return studies.join(S.get("study", ""), node)
 
 
+ONE, SPLIT = "~one", "~split"          # the switch's parts: show the repository as one study, or split it again
+
+
 def _nav(S: dict, view: str) -> List[dict]:
-    """The studies, for system-diff's pinned list on the left (shown once it has one)."""
-    return [{"id": x["id"], "title": x["title"], "sub": x["path"], "active": x["id"] == S["study"],
-             "target": {"view": view, "part": x["id"] + "@"}} for x in S.get("studies", [])]
+    """The studies, for system-diff's pinned list on the left, and the switch to read the repository as one."""
+    if S.get("split_off"):
+        return [{"id": SPLIT, "title": f"Split into {S['could_split']} studies", "sub": "found from the folders",
+                 "active": False, "target": {"view": view, "part": SPLIT + "@"}}]
+    items = [{"id": x["id"], "title": x["title"], "sub": x["path"], "active": x["id"] == S["study"],
+              "target": {"view": view, "part": x["id"] + "@"}} for x in S.get("studies", [])]
+    if items:
+        items.append({"id": ONE, "title": "Show as one study", "sub": "if these are not separate works",
+                      "active": False, "target": {"view": view, "part": ONE + "@"}})
+    return items
 
 
 def _study_title(S: dict) -> str:
@@ -394,8 +411,9 @@ def studies_model(ctx, S: dict) -> dict:
 def web(ctx) -> dict:
     out = _web(ctx)
     S = state(ctx)
-    if S["studies"]:
+    if S["studies"] or S.get("split_off"):
         out["nav"] = _nav(S, ctx.view)
+        out["nav_title"] = "Studies"
         name = _study_title(S)
         out["title"] = f"{out.get('title', '')} · {name}" if name and ctx.part else out.get("title", "")
     return out

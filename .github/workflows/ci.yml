@@ -21,8 +21,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      # system-diff 0.10 (research-diff's tabs inside its page) is on its main branch until it is on PyPI
-      - run: python -m pip install "system-diff[mcp] @ git+https://github.com/simplifiedmachine/system-diff@main"
       - run: python -m pip install -e ".[dev]"
       - run: python -m pytest -q
 
@@ -34,7 +32,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m pip install "system-diff @ git+https://github.com/simplifiedmachine/system-diff@main"
       - run: python -m pip install -e .
       - name: The research map is current (if not, run research-diff readme and commit)
         run: research-diff readme --check

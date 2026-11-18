@@ -92,7 +92,7 @@ def test_a_repository_with_several_papers_is_read_study_by_study(repo, files):
     })
     live = engine_live(repo)
     overview = x.web(ctx(repo, "research", live=live))
-    assert [n["id"] for n in overview["nav"]] == ["1_batch", "2_lr"]
+    assert [n["id"] for n in overview["nav"]] == ["1_batch", "2_lr", "~one"]
     assert overview["diagram"]["enter"]["b:2_lr"] == {"view": "research", "part": "2_lr@"}
     one = x.state(ctx(repo, "evidence", "1_batch@", live=live))
     two = x.state(ctx(repo, "evidence", "2_lr@", live=live))
@@ -103,8 +103,8 @@ def test_a_repository_with_several_papers_is_read_study_by_study(repo, files):
     assert ev["diagram"]["files"]["b:C1"]["path"] == "2_lr/paper/main.tex"
     assert ev["diagram"]["files"]["b:R1"]["path"] == "2_lr/notes.md"
     zoom = x.web(ctx(repo, "evidence", "2_lr@C1", live=live))                      # a zoom keeps the study
-    assert zoom["diagram"]["pick"] == "b:C1" and [n["active"] for n in zoom["nav"]] == [False, True]
-    assert [n["active"] for n in ev["nav"]] == [False, True]
+    assert zoom["diagram"]["pick"] == "b:C1" and [n["active"] for n in zoom["nav"]] == [False, True, False]
+    assert [n["active"] for n in ev["nav"]] == [False, True, False]
     card = ev["diagram"]["details"]["b:C1"]
     assert card["headline"].startswith("This claim") and any(f["title"] == "Against it" for f in card["facts"])
     assert any("cannot both stand" in i for i in card["insights"])
@@ -146,3 +146,44 @@ def test_claude_can_name_research_blocks_and_find_their_source(study):
     assert x.resolve(c, "`b:C2`")["id"] == "C2" and x.resolve(c, "Z9") is None
     src = x.source(ctx(study, "", "C1"), "C1")
     assert src["files"] == [{"path": "paper/main.tex", "line": 7}] and "marker" in src["config"]["change"]
+
+
+def test_numbered_paper_folders_are_studies_whatever_the_globs_say(repo, files):
+    """The shape of a real repository: six numbered paper folders (one without a paper yet), a results folder by
+    study, shared scripts, slides in another folder, and a research-diff.toml whose globs name paper 1 only."""
+    files(repo, {
+        "research-diff.toml": 'paper = ["1_tradeoff/paper/*.tex"]\nnotes = ["1_tradeoff/**/*.md"]\n',
+        "1_tradeoff/paper/main.tex": "\\section{Results}\n\n% C1: Reward models trade off\n% relies on: R1\nYes.\n",
+        "1_tradeoff/notes.md": "## R1: The lean spans 26 to 68%\n\nmetrics: lean=0.42\n",
+        "2_behavioral/paper/main.tex": "\\section{Results}\n\n% C1: Behaviour drifts\nIt does.\n",
+        "3_duration/paper/main.tex": "\\section{Intro}\n\n% C1: Durations matter\nThey do.\n",
+        "4_quality/paper/main.tex": "\\section{Intro}\n\n% C1: Data quality\nYes.\n",
+        "5_critical/paper/main.tex": "\\section{Intro}\n\n% C1: Critical periods\nYes.\n",
+        "6_serving/survey/notes.md": "## R1: Latency doubles at 64 users\n\nmetrics: p99=2.1\n",
+        "results/2_behavioral/notes.md": "## R1: Drift of 0.3\n\nmetrics: drift=0.3\nsupports: C1\n",
+        "patent_presentations/deck.tex": "% C9: Not a study\n",
+        "scripts/run.py": "print(1)\n",
+    })
+    live = engine_live(repo)
+    overview = x.web(ctx(repo, "research", live=live))
+    assert [n["id"] for n in overview["nav"]] == ["1_tradeoff", "2_behavioral", "3_duration", "4_quality",
+                                                  "5_critical", "6_serving", "~one"]
+    two = x.state(ctx(repo, "evidence", "2_behavioral@", live=live))
+    assert two["graph"]["nodes"]["C1"]["title"] == "Behaviour drifts"          # read despite the paper-1-only globs
+    assert two["graph"]["nodes"]["C1"]["verdict"] == "supported"               # results/2_behavioral/ is its own
+    six = x.state(ctx(repo, "research", "6_serving@", live=live))
+    assert "R1" in six["map"]["nodes"] and "C9" not in six["map"]["nodes"]
+
+
+def test_the_person_can_read_the_repository_as_one_study_and_split_it_again(repo, files):
+    files(repo, {"1_a/paper/main.tex": "% C1: One\n", "2_b/paper/main.tex": "% C1: Two\n"})
+    live = engine_live(repo)
+    nav = x.web(ctx(repo, "research", live=live))["nav"]
+    assert [n["id"] for n in nav] == ["1_a", "2_b", "~one"]
+    one = x.web(ctx(repo, "research", "~one@", live=live))                      # the switch, remembered
+    assert [n["title"] for n in one["nav"]] == ["Split into 2 studies"]
+    assert x.state(ctx(repo, "evidence", "", live=live))["studies"] == []
+    x.web(ctx(repo, "research", "~split@", live=live))
+    assert len(x.state(ctx(repo, "evidence", "", live=live))["studies"]) == 2
+    files(repo, {"research-diff.toml": "studies = false\n"})                     # or for good, in the config
+    assert x.state(ctx(repo, "evidence", "", live=engine_live(repo, "v2")))["studies"] == []

@@ -119,20 +119,17 @@ no experiment, and when a link points at nothing.
 
 ## Install and run
 
-Three steps, in a terminal (Python 3.11+). The newest work is on the main branch until the next release.
+Three steps, in a terminal (Python 3.11+).
 
-**1. Install** research-diff and system-diff in one command (one page for both). On Windows, quit Claude Code
-first: it keeps the programs open.
+**1. Install** (on Windows, quit Claude Code first: it keeps the programs open):
 
 ```sh
-python -m pip install -U "system-diff[mcp,app] @ git+https://github.com/simplifiedmachine/system-diff@main" "research-diff[mcp] @ git+https://github.com/simplifiedmachine/research-diff@main"
-python -c "import system_diff, research_diff; print(system_diff.__version__, research_diff.__version__)"
+python -m pip install -U "research-diff[mcp,app]"
 ```
 
-research-diff uses system-diff as a library (git reading, its pictures, finding your LLM), so it always comes along;
-it is pure Python and needs nothing else. With system-diff 0.10 or later (today: its main branch, as above)
-research-diff's tabs join system-diff's page; with an older one (`pip install "research-diff[mcp]"` alone) research-diff
-serves its own page (`research-diff watch`). system-diff never needs research-diff.
+research-diff runs inside system-diff's page and engine (one page, one port, for both), and uses it as a library, so
+system-diff always comes along; `[app]` adds the Studio's Claude Code sessions (it is system-diff's `[app]`, the same
+whichever package you name it on). Both are pure Python. system-diff never needs research-diff.
 
 **2. Give Claude Code the tools** (once; every session in every repository then has them):
 
@@ -141,7 +138,8 @@ claude mcp add --scope user research-diff -- research-diff mcp
 claude mcp add --scope user system-diff -- system-diff mcp
 ```
 
-Ask Claude "what contradicts the paper?" or "does C3 still hold?" and it answers from them (`research_evidence`,
+Sessions started in the Studio get research-diff's tools on their own, in repositories with research; this step is
+for Claude Code in a terminal. Ask Claude "what contradicts the paper?" or "does C3 still hold?" and it answers from them (`research_evidence`,
 `explain`, `paper_outline`, `review_paper`, `research_diff`, ...).
 
 **3. Open the page** in your research repository:
@@ -209,7 +207,7 @@ python -m pip install -U "research-diff[mcp]"
 
 ## With system-diff: one engine, one page, one pane
 
-Installed beside a system-diff with extensions (0.10 and later), research-diff runs **inside system-diff's own
+With system-diff (0.10 and later, which research-diff installs), research-diff runs **inside system-diff's own
 engine**, as its extension: one port, one web page and one pane in Claude Code, with system-diff's caching and
 diagrams. Its tabs sit after system-diff's own:
 
@@ -224,15 +222,16 @@ diagrams. Its tabs sit after system-diff's own:
 …, git submodules included) are read study by study, each with its own ids (every paper has its C1), its own diff
 and evidence. The Research tab opens on one box per study; a click opens it, and every tab follows. Name them in
 research-diff.toml (`studies = ["1_tradeoff_reward_model_eval", "2_behavioral_field"]`) or let research-diff find
-every top-level folder that holds a paper. Hovering a box of the Evidence diagram says what it is, what supports and
+them: numbered top-level folders (`1_…`, `2_…`), else folders holding a `paper/` or `experiments/` folder or a LaTeX
+file; a study's files are its folder's and those under its name elsewhere (`results/<study>/…`). If the studies it
+finds are not separate works, **Show as one study** at the end of the list reads the repository as one (remembered;
+**Split into N studies** brings them back), and `studies = false` in research-diff.toml does so for good. Hovering a box of the Evidence diagram says what it is, what supports and
 what contradicts it, what to do about it, and where it is.
 
 The research is read from the files system-diff's engine already holds in memory, once per version of the working
 tree, so the tabs answer in milliseconds. research-diff then starts no web server and no pane of its own (`/research-diff`
 says where its tabs are), and what auto-research asks of Claude goes through system-diff's pane.
-`RESEARCH_DIFF_STANDALONE=1` keeps research-diff on its own, with its own page and pane, as without system-diff.
-
-Until system-diff 0.10.0 is on PyPI, both come from their main branches (see Install and run).
+`RESEARCH_DIFF_STANDALONE=1` keeps research-diff on its own, with its own page and pane.
 
 ## In Claude Code (with the plugins)
 

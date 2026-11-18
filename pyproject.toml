@@ -18,12 +18,14 @@ classifiers = [
     "Programming Language :: Python :: 3 :: Only",
     "Topic :: Scientific/Engineering",
 ]
-# system-diff as a library: git reading, its pictures and LLM discovery (same author, no dependencies of its own). With
-# a system-diff that has extensions (0.10+), research-diff also runs inside its page (host.merged()); not required.
-dependencies = ["system-diff>=0.8.0"]
+# system-diff as a library (git reading, its pictures, LLM discovery; same author, no dependencies of its own), and the
+# page and engine research-diff's tabs run inside (system-diff's extensions, 0.10+).
+dependencies = ["system-diff>=0.10.0"]
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.10"]
+# system-diff's Studio with Claude Code sessions (the Claude Agent SDK): the same as installing system-diff[app]
+app = ["system-diff[app]>=0.10.0"]
 dev = ["pytest>=8", "mcp>=1.10"]
 
 [project.urls]
