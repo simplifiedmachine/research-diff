@@ -543,6 +543,12 @@ def route(ctx, method: str, path: str, query: Dict[str, str], body: bytes) -> Tu
     return 404, js, b'{"error": "no such page"}'
 
 
+# research-diff's MCP tools stay in its own server (`research-diff mcp`): a session in the terminal gets it from
+# research-diff's plugin, and system-diff's app attaches it to the sessions it starts (MCP_SERVER below), so code-only
+# repositories never carry research tools, and neither tool's server depends on the other's.
+MCP_SERVER = {"command": "research-diff", "args": ["mcp"]}
+
+
 def file_ok(path: str) -> bool:
     """The research's files the page may show beside code: the paper and the notes, the configs."""
     return path.endswith((".tex", ".md", ".bib", ".yaml", ".yml", ".csv"))

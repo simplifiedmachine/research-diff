@@ -122,8 +122,30 @@ def tool_log(root: Path, experiment: str, metrics: Dict[str, float], title: str 
     return {"recorded": rid, "in": log}
 
 
+class _Named:
+    """A server whose tools take a prefix: research-diff's tools inside system-diff's own MCP server are
+    `research_explain`, `research_checkpoint`, ... beside system-diff's `explain`, `checkpoint`."""
+
+    def __init__(self, server, prefix: str = ""):
+        self._server, self._prefix = server, prefix
+
+    def tool(self, **kw):
+        def deco(fn):
+            name = fn.__name__ if not self._prefix or fn.__name__.startswith(self._prefix) else self._prefix + fn.__name__
+            return self._server.tool(name=name, **kw)(fn)
+        return deco
+
+
 def build() -> Server:
+    """research-diff's own MCP server (`research-diff mcp`)."""
     server = Server("research-diff", instructions=INSTRUCTIONS)
+    register(server)
+    return server
+
+
+def register(target, prefix: str = ""):
+    """Every research-diff tool, on `target`: its own server, or system-diff's (system_diff_ext.mcp, prefixed)."""
+    server = _Named(target, prefix)
 
     @_read_only(server)
     def research_map(at: str = ".") -> Dict[str, Any]:
@@ -321,7 +343,7 @@ def build() -> Server:
             return {"error": str(exc)}
         return {"state": c["state"]}
 
-    return server
+    return target
 
 
 def _read_only(server):
