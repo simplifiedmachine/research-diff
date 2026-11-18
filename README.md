@@ -121,13 +121,18 @@ no experiment, and when a link points at nothing.
 
 Three steps, in a terminal (Python 3.11+). The newest work is on the main branch until the next release.
 
-**1. Install** research-diff and system-diff (one page for both). On Windows, quit Claude Code first: it keeps the
-programs open.
+**1. Install** research-diff and system-diff in one command (one page for both). On Windows, quit Claude Code
+first: it keeps the programs open.
 
 ```sh
-python -m pip install -U "system-diff[mcp,app] @ git+https://github.com/simplifiedmachine/system-diff@main"
-python -m pip install -U "research-diff[mcp] @ git+https://github.com/simplifiedmachine/research-diff@main"
+python -m pip install -U "system-diff[mcp,app] @ git+https://github.com/simplifiedmachine/system-diff@main" "research-diff[mcp] @ git+https://github.com/simplifiedmachine/research-diff@main"
+python -c "import system_diff, research_diff; print(system_diff.__version__, research_diff.__version__)"
 ```
+
+research-diff uses system-diff as a library (git reading, its pictures, finding your LLM), so it always comes along;
+it is pure Python and needs nothing else. With system-diff 0.10 or later (today: its main branch, as above)
+research-diff's tabs join system-diff's page; with an older one (`pip install "research-diff[mcp]"` alone) research-diff
+serves its own page (`research-diff watch`). system-diff never needs research-diff.
 
 **2. Give Claude Code the tools** (once; every session in every repository then has them):
 

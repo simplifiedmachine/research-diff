@@ -18,8 +18,9 @@ classifiers = [
     "Programming Language :: Python :: 3 :: Only",
     "Topic :: Scientific/Engineering",
 ]
-# Its pictures, snapshots and live page are system-diff's (same author, no dependencies of its own), pinned.
-dependencies = ["system-diff>=0.10.0.dev6"]
+# system-diff as a library: git reading, its pictures and LLM discovery (same author, no dependencies of its own). With
+# a system-diff that has extensions (0.10+), research-diff also runs inside its page (host.merged()); not required.
+dependencies = ["system-diff>=0.8.0"]
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.10"]
