@@ -20,8 +20,9 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, List, Optional
 
 from system_diff.sources import git
 
@@ -137,6 +138,135 @@ def after_change(root: Path, who: str) -> Optional[str]:
         (f" (+{len(loud) - 3} more)" if len(loud) > 3 else "")
 
 
+# ── the heavy part of each hook, off the hook's clock ──────────────────────────────────────────────────────────────
+# A hook must answer in well under a second, whatever the repository's size (Claude Code gives up after its timeout,
+# 10 s for a prompt). So a hook only notes what happened and hands the reading of the research to a worker of its own
+# (`research-diff hook-bg EVENT`, detached), one per event at a time: a hook that comes while one works marks it to run
+# again with the newest payload. What the worker finds for the chat (a verdict that moved) waits in notices.jsonl and
+# comes with the next hook's answer. Tests and RESEARCH_DIFF_HOOK_SYNC=1 run it in the hook itself.
+
+def _sync() -> bool:
+    return bool(os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("RESEARCH_DIFF_HOOK_SYNC"))
+
+
+def background(root: Path, event: str, payload: dict) -> None:
+    store.write(root, f"bg-{event}.json", payload)
+    if _sync():
+        work(root, event)
+        return
+    pid_file = store.home(root) / f"bg-{event}.pid"
+    try:
+        pid = int(pid_file.read_text().strip() or 0)
+    except (OSError, ValueError):
+        pid = 0
+    from .autoresearch import _alive
+    if pid and _alive(pid) and time.time() - pid_file.stat().st_mtime < 600:
+        (store.home(root) / f"bg-{event}.again").write_text("1")      # it runs: once more, with this payload
+        return
+    flags = {"start_new_session": True} if os.name != "nt" else {"creationflags": 0x08000000 | 0x00000200}
+    try:
+        subprocess.Popen([sys.executable, "-m", "research_diff", "--repo", str(root), "hook-bg", event],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=str(root),
+                         **flags)
+    except OSError:
+        pass
+
+
+def run_background(root: Path, event: str) -> int:
+    """The worker: the event's work, again while hooks asked for it meanwhile."""
+    home = store.home(root)
+    pid_file, again = home / f"bg-{event}.pid", home / f"bg-{event}.again"
+    pid_file.write_text(str(os.getpid()))
+    try:
+        while True:
+            try:
+                again.unlink()
+            except OSError:
+                pass
+            work(root, event)
+            if not again.exists():
+                break
+    finally:
+        try:
+            pid_file.unlink()
+        except OSError:
+            pass
+    return 0
+
+
+def notice(root: Path, text: str) -> None:
+    store.append(root, "notices.jsonl", {"text": text})
+
+
+def take_notices(root: Path) -> List[str]:
+    got = [n["text"] for n in store.lines(root, "notices.jsonl")]
+    if got:
+        try:
+            (store.home(root) / "notices.jsonl").unlink()
+        except OSError:
+            pass
+    return got
+
+
+def work(root: Path, event: str) -> None:
+    """The heavy part of one hook. Never raises."""
+    p = store.read(root, f"bg-{event}.json", {}) or {}
+    try:
+        if event == "prompt":
+            compare.mark_turn(root)
+            store.write(root, "last.json", compare.read(root, ".")[0])
+        elif event == "tool":
+            if p.get("tool") == "Bash":
+                sync_trackers(root)
+            said = after_change(root, p.get("who", "main"))
+            if said:
+                notice(root, said)
+        elif event == "start":
+            store.write(root, "stands.json", {"text": where_it_stands(root), "at": time.time()})
+        elif event in ("stop", "substop"):
+            _stop_work(root, p, subagent=event == "substop")
+    except Exception:  # noqa: BLE001 - a worker that fails leaves the session as it was
+        pass
+
+
+def _stop_work(root: Path, p: dict, subagent: bool) -> None:
+    from . import history
+    who = p.get("who", "main")
+    if not subagent:
+        msg = hook_message(root)
+        if msg:
+            notice(root, msg)
+    c = compare.compare(root, "turn", ".")
+    if c.diff["changes"]:
+        by = sorted(activity.edited_since(root, 0).keys())[-5:] if subagent else []
+        from system_diff.compare import snapshot
+        history.record(root, history.entry(c.diff, c.after, "turn", activity.last_request(root),
+                                           by=[who] if subagent else by, base=compare.resolve(root, "turn")[0],
+                                           head=snapshot(root)))
+        paper_files = {x["path"] for x in c.after.get("paper", [])}
+        began = (activity.requests(root, 1) or [{"at": 0}])[-1].get("at", 0)
+        if not subagent and any(f in paper_files for fs in activity.edited_since(root, began).values() for f in fs):
+            from . import review
+            review.ensure(root)       # the paper changed this turn: read it against itself again
+        if subagent:
+            agents.publish(root, who, "*", f"finished: {c.diff['headline']}", auto=True)
+    g = evidence.build(c.after, c.cfg, agents.owners(root))
+    agents.remember(root, g)
+    activity.write_state(root, headline=c.diff["headline"], evidence=g["headline"],
+                         contradictions=sum(1 for e in g["edges"] if e["effective"] in ("-", "?")),
+                         focus=list(activity.focus(root, c.after) or []),
+                         worth=[x["title"] for x in rank.worth_a_look(c.diff, c.after, 2)])
+
+
+# ── the hooks: each notes what happened, hands the reading on, and answers at once ─────────────────────────────────
+
+def _with_notices(root: Path, out: dict) -> dict:
+    said = take_notices(root)
+    if said:
+        out["systemMessage"] = " · ".join(said[-3:])
+    return out
+
+
 def on_tool(root: Path, p: dict) -> dict:
     tool, inp = p.get("tool_name", ""), p.get("tool_input") or {}
     agent_id = p.get("agent_id") or "main"
@@ -147,16 +277,9 @@ def on_tool(root: Path, p: dict) -> dict:
         activity.record(root, "edit", path=rel, agent=who)
     elif tool == "Read" and rel:
         activity.record(root, "read", path=rel, agent=who, line=inp.get("offset"))
-    out: dict = {}
     if tool in EDITS or tool == "Bash" or tool.startswith("mcp__research-diff"):
-        try:
-            if tool == "Bash":
-                sync_trackers(root)
-            said = after_change(root, who)
-            if said:
-                out["systemMessage"] = said
-        except (OSError, subprocess.CalledProcessError, ValueError, KeyError):
-            pass
+        background(root, "tool", {"tool": tool, "who": who})
+    out = _with_notices(root, {})
     msgs = agents.inbox(root, who)
     if msgs:
         out.update(_context("PostToolUse", agents.as_context(msgs)))
@@ -169,11 +292,7 @@ def on_prompt(root: Path, p: dict) -> dict:
     autoresearch.ensure_runner(root)
     if (p.get("prompt") or "").startswith("Auto-research goal:"):
         autoresearch.told(root)
-    try:
-        compare.mark_turn(root)
-        store.write(root, "last.json", compare.read(root, ".")[0])
-    except (OSError, subprocess.CalledProcessError, ValueError):
-        pass
+    background(root, "prompt", {})
     objectives.ensure(root)
     ctx = objectives.context(root)
     msgs = agents.inbox(root, "main")
@@ -187,46 +306,19 @@ def on_start(root: Path, p: dict) -> dict:
     start_web(root)
     from . import autoresearch
     autoresearch.ensure_runner(root)          # jobs went on while the session was away: follow them again
-    try:
-        ctx = where_it_stands(root)
-        ask = autoresearch.pending(root)
-        if ask:
-            autoresearch.told(root)
-            ctx += "\n\nAuto-research is on and waits for you (it went on while you were away):\n" + ask
-        return _context("SessionStart", ctx)
-    except (OSError, subprocess.CalledProcessError, ValueError, KeyError):
-        return {}
+    background(root, "start", {})             # in tests, at once; else what the last session left is told now
+    stands = (store.read(root, "stands.json", {}) or {}).get("text", "")
+    ask = autoresearch.pending(root)
+    if ask:
+        autoresearch.told(root)
+        stands += ("\n\n" if stands else "") + "Auto-research is on and waits for you (it went on while you were away):\n" + ask
+    return _context("SessionStart", stands) if stands else {}
 
 
 def on_stop(root: Path, p: dict, subagent: bool = False) -> dict:
-    from . import history
     who = agents.name_of(root, p.get("agent_id") or "main") if subagent else "main"
-    out: dict = {}
-    try:
-        msg = hook_message(root) if not subagent else None
-        if msg:
-            out["systemMessage"] = msg
-        c = compare.compare(root, "turn", ".")
-        if c.diff["changes"]:
-            by = sorted(activity.edited_since(root, 0).keys())[-5:] if subagent else []
-            from system_diff.compare import snapshot
-            history.record(root, history.entry(c.diff, c.after, "turn", activity.last_request(root),
-                                               by=[who] if subagent else by, base=compare.resolve(root, "turn")[0],
-                                               head=snapshot(root)))
-            paper_files = {x["path"] for x in c.after.get("paper", [])}
-            began = (activity.requests(root, 1) or [{"at": 0}])[-1].get("at", 0)
-            if not subagent and any(f in paper_files for fs in activity.edited_since(root, began).values() for f in fs):
-                from . import review
-                review.ensure(root)       # the paper changed this turn: read it against itself again
-            if subagent:
-                agents.publish(root, who, "*", f"finished: {c.diff['headline']}", auto=True)
-        g = evidence.build(c.after, c.cfg, agents.owners(root))
-        activity.write_state(root, headline=c.diff["headline"], evidence=g["headline"],
-                             contradictions=sum(1 for e in g["edges"] if e["effective"] in ("-", "?")),
-                             focus=list(activity.focus(root, c.after) or []),
-                             worth=[x["title"] for x in rank.worth_a_look(c.diff, c.after, 2)])
-    except (OSError, subprocess.CalledProcessError, ValueError, KeyError):
-        pass
+    background(root, "substop" if subagent else "stop", {"who": who})
+    out = _with_notices(root, {}) if not subagent else {}
     if not subagent:
         from . import autoresearch, chat
         chat.answered(root, p)

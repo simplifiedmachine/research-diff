@@ -246,7 +246,15 @@ def extract(source, cfg: Dict[str, Any]) -> dict:
     ignore = [glob_rx(p) for p in cfg.get("ignore", [])]
     files = [f for f in source.files if not skip.search(f) and not any(r.match(f) for r in ignore)]
     fileset = set(source.files)
-    pick = lambda globs: [f for f in files if any(glob_rx(g).match(f) for g in globs)]  # noqa: E731
+    compiled: Dict[tuple, list] = {}
+
+    def pick(globs) -> List[str]:          # each kind's files, worked out once (globs compiled once)
+        key = tuple(globs)
+        if key not in compiled:
+            rxs = [glob_rx(g) for g in globs]
+            compiled[key] = [f for f in files if any(r.match(f) for r in rxs)]
+        return compiled[key]
+    config_files = set(pick(cfg["configs"]))
     m = Model(kinds)
     warnings: List[str] = []
 
@@ -282,7 +290,7 @@ def extract(source, cfg: Dict[str, Any]) -> dict:
                 n["sources"] = sorted(set(n["sources"]) | cites)
     for f, text in source.read_many(pick(cfg["scripts"]) + pick(cfg["configs"])).items():
         read_comment(m, text, f, def_rx)
-        block = config_block(text, f) if f in pick(cfg["configs"]) else None
+        block = config_block(text, f) if f in config_files else None
         if not block or not block.get("id"):
             continue
         nid = str(block["id"])

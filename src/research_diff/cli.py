@@ -322,6 +322,8 @@ def parser() -> argparse.ArgumentParser:
     st.add_argument("--undo", action="store_true")
     st.add_argument("--no-status-line", action="store_true")
     sub.add_parser("hook", help="what Claude Code's hooks run")
+    hb = sub.add_parser("hook-bg", help=argparse.SUPPRESS)
+    hb.add_argument("event")
     sub.add_parser("mcp", help="the MCP server over stdio (needs the [mcp] extra)")
     return ap
 
@@ -430,6 +432,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.cmd == "setup":
         from . import agent
         return agent.setup_claude(root, args.scope, args.undo, status_line=not args.no_status_line)
+    if args.cmd == "hook-bg":
+        from . import agent
+        return agent.run_background(root, args.event)
     if args.cmd == "hook":
         from . import agent
         return agent.run_hook(sys.stdin.read() if not sys.stdin.isatty() else "")

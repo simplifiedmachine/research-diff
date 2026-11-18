@@ -75,8 +75,35 @@ def resolve(root: Path, point: str) -> tuple:
     return git("rev-parse", "--verify", f"{point}^{{commit}}", cwd=root).strip(), point
 
 
+class WorkSource:
+    """The working tree as it is on disk, read without a snapshot: the files git would add (tracked, and untracked
+    but not ignored), listed by one `git ls-files`, and only the files asked for read. Nothing is hashed, so a
+    repository with large data files costs no more than its research files do."""
+    label = "working tree"
+
+    def __init__(self, root: Path):
+        self.root = Path(root)
+        out = git("ls-files", "-z", "-c", "-o", "--exclude-standard", cwd=self.root)
+        self.files = sorted({f for f in out.split("\0") if f})
+
+    def read(self, path: str) -> str:
+        try:
+            return (self.root / path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+
+    def read_many(self, paths) -> Dict[str, str]:
+        return {p: self.read(p) for p in paths}
+
+
 def read(root: Path, point: str = ".", config_path: Optional[str] = None) -> tuple:
-    """(map, config, label) of one point."""
+    """(map, config, label) of one point. The working tree is read from disk (WorkSource): no snapshot."""
+    if point in WORKTREE:
+        src = WorkSource(root)
+        cfg = config.load(src, root, config_path)
+        bp = extract(src, cfg)
+        bp["ref"] = "working tree"
+        return bp, cfg, "working tree"
     sha, label = resolve(root, point)
     src = GitSource(sha, root)
     cfg = config.load(src, root, config_path)
