@@ -239,7 +239,7 @@ def _detect(src, ident, cfg: dict, root: Path) -> List[dict]:
     key = (str(root), ident, json.dumps(cfg.get("studies"), default=str), json.dumps(cfg.get("paper"), default=str))
     if ident is not None and key in _DETECTED:
         return _DETECTED[key]
-    got = studies.detect(src.files, cfg)
+    got = studies.detect(src.files, cfg, read=getattr(src, "read_many", None))
     if ident is not None:
         _DETECTED[key] = got
         while len(_DETECTED) > 8:

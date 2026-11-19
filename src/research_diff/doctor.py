@@ -137,7 +137,7 @@ def studies_report(root: Path, cfg: dict) -> List[str]:
             except subprocess.CalledProcessError as exc:
                 out.append(f"✗ git cannot list them either: {(exc.stderr or '').strip()[:300]}")
     src = compare.WorkSource(root)          # the submodules' files too (git ls-files --recurse-submodules)
-    found = studies.detect(src.files, cfg)
+    found = studies.detect(src.files, cfg, read=src.read_many)
     if not found:
         return out
     sha, label = compare.resolve(root, "checkpoint")

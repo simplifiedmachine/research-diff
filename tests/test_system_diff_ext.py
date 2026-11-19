@@ -95,10 +95,10 @@ def no_system_list(monkeypatch):
 
 def test_a_repository_with_several_papers_is_read_study_by_study(repo, files, no_system_list):
     files(repo, {
-        "1_batch/paper/main.tex": "\\section{Results}\n\n% C1: Small batches win\n% relies on: R1\nYes.\n",
+        "1_batch/paper/main.tex": "\\documentclass{article}\n\\section{Results}\n\n% C1: Small batches win\n% relies on: R1\nYes.\n",
         "1_batch/notes.md": "## R1: Batch 32 beats 512\n\nmetrics: gap=0.03\n",
         "1_batch/train.py": "print('train')\n",
-        "2_lr/paper/main.tex": ("\\section{Results}\n\n% C1: Batch size does not matter\n% relies on: R1\n"
+        "2_lr/paper/main.tex": ("\\documentclass{article}\n\\section{Results}\n\n% C1: Batch size does not matter\n% relies on: R1\n"
                                 "Indeed.\n\n% C2: Scaling closes the gap\n% contradicts: C1\nAlso.\n"),
         "2_lr/notes.md": "## R1: Scaled LR closes the gap\n\nmetrics: gap=0.002\n",
         "2_lr/sweep.yaml": "lr: [0.1, 0.4]\n",
@@ -167,19 +167,19 @@ def test_studies_are_folders_with_a_paper_and_work_of_their_own_whatever_their_n
     scripts and a paper alone are no study, and a study reads only its own files (and those at the top)."""
     files(repo, {
         "research-diff.toml": 'paper = ["tradeoff/paper/*.tex"]\nnotes = ["tradeoff/**/*.md"]\n',
-        "tradeoff/paper/main.tex": "\\section{Results}\n\n% C1: Reward models trade off\n% relies on: R1\nYes.\n",
+        "tradeoff/paper/main.tex": "\\documentclass{article}\n\\section{Results}\n\n% C1: Reward models trade off\n% relies on: R1\nYes.\n",
         "tradeoff/notes.md": "## R1: The lean spans 26 to 68%\n\nmetrics: lean=0.42\n",
         "tradeoff/experiments/run.py": "print('run')\n",
-        "behavioral/paper/main.tex": "\\section{Results}\n\n% C1: Behaviour drifts\nIt does.\n",
+        "behavioral/paper/main.tex": "\\documentclass{article}\n\\section{Results}\n\n% C1: Behaviour drifts\nIt does.\n",
         "behavioral/experiments/config.yaml": "lr: 0.1\n",
-        "duration/paper/main.tex": "\\section{Intro}\n\n% C1: Durations matter\nThey do.\n",
+        "duration/paper/main.tex": "\\documentclass{article}\n\\section{Intro}\n\n% C1: Durations matter\nThey do.\n",
         "duration/env.py": "print('env')\n",
-        "serving/survey/survey.tex": "\\section{Intro}\n\n% C1: Latency doubles at 64 users\nIt does.\n",
+        "serving/survey/survey.tex": "\\documentclass{article}\n\\section{Intro}\n\n% C1: Latency doubles at 64 users\nIt does.\n",
         "serving/bench/load.py": "print('load')\n",
         "results/behavioral/notes.md": "## R1: Drift of 0.3\n\nmetrics: drift=0.3\nsupports: C1\n",
         "patent_presentations/deck.tex": "% C9: Not a study\n",            # slides: a paper, no work
         "scripts/run.py": "print(1)\n",                                       # work, no paper
-        "drafts/paper/main.tex": "% C7: A draft\n",                           # a paper alone
+        "drafts/paper/main.tex": "\\documentclass{article}\n% C7: A draft\n",                           # a paper alone
     })
     live = engine_live(repo)
     now = x.web(ctx(repo, "research", live=live))
@@ -194,8 +194,8 @@ def test_studies_are_folders_with_a_paper_and_work_of_their_own_whatever_their_n
 
 
 def test_the_person_can_read_the_repository_as_one_study_and_split_it_again(repo, files, no_system_list):
-    files(repo, {"1_a/paper/main.tex": "% C1: One\n", "1_a/run.py": "print(1)\n",
-                 "2_b/paper/main.tex": "% C1: Two\n", "2_b/run.py": "print(2)\n"})
+    files(repo, {"1_a/paper/main.tex": "\\documentclass{article}\n% C1: One\n", "1_a/run.py": "print(1)\n",
+                 "2_b/paper/main.tex": "\\documentclass{article}\n% C1: Two\n", "2_b/run.py": "print(2)\n"})
     live = engine_live(repo)
     nav = x.web(ctx(repo, "research", live=live))["nav"]
     assert [n["id"] for n in nav] == ["1_a", "2_b", "~one"]
@@ -306,8 +306,8 @@ def test_the_pane_draws_the_research_tabs_too(study):
 def test_the_study_follows_the_project_picked_in_system_diffs_own_list(repo, files, monkeypatch):
     """Where system-diff's list already offers the studies' folders, there is one list: its pick (which stays from
     tab to tab) is the study; a study named in the page's part still wins."""
-    files(repo, {"a/paper/main.tex": "% C1: Alpha\n", "a/run.py": "print(1)\n",
-                 "b/paper/main.tex": "% C1: Beta\n", "b/run.py": "print(2)\n"})
+    files(repo, {"a/paper/main.tex": "\\documentclass{article}\n% C1: Alpha\n", "a/run.py": "print(1)\n",
+                 "b/paper/main.tex": "\\documentclass{article}\n% C1: Beta\n", "b/run.py": "print(2)\n"})
     live = engine_live(repo)
     monkeypatch.setattr(x, "_system_projects", lambda root: ["a", "b"])
     monkeypatch.setattr(x, "_scope", lambda c: "b/paper")                       # a folder inside study b
@@ -350,9 +350,9 @@ def test_files_without_research_are_read_once(repo, files):
 
 
 def _two_studies(repo, files):
-    files(repo, {"a/paper/main.tex": "\\section{R}\n\n% C1: Alpha\n% relies on: R1\nYes.\n", "a/run.py": "print(1)\n",
+    files(repo, {"a/paper/main.tex": "\\documentclass{article}\n\\section{R}\n\n% C1: Alpha\n% relies on: R1\nYes.\n", "a/run.py": "print(1)\n",
                  "a/notes.md": "## R1: Alpha holds\n\nmetrics: acc=0.9\n",
-                 "b/paper/main.tex": "% C1: Beta\n", "b/run.py": "print(2)\n"})
+                 "b/paper/main.tex": "\\documentclass{article}\n% C1: Beta\n", "b/run.py": "print(2)\n"})
 
 
 def test_a_study_is_read_again_only_when_its_own_files_change(repo, files, no_system_list, monkeypatch):
@@ -511,3 +511,11 @@ def test_the_paper_and_its_appendix_are_columns_of_their_own(repo, files):
     page = x.web(extensions.Context(repo, "paper", "", 140, 2, None))
     svg = page["diagram"]["svg"]
     assert "PAPER (2)" in svg.upper() and "APPENDIX" in svg.upper()             # 8 a column, then the next
+
+
+def test_a_folder_of_scripts_with_latex_snippets_is_no_study(repo, files, no_system_list):
+    files(repo, {"a/paper/main.tex": "\\documentclass{article}\n% C1: Alpha\n", "a/run.py": "print(1)\n",
+                 "b/paper/main.tex": "\\documentclass{article}\n% C1: Beta\n", "b/run.py": "print(2)\n",
+                 "scripts/table.tex": "\\begin{tabular}{l}x\\end{tabular}\n", "scripts/make.py": "print(3)\n"})
+    page = x.web(ctx(repo, "research", live=engine_live(repo)))
+    assert [n["id"] for n in page["nav"]] == ["a", "b", "~one"]

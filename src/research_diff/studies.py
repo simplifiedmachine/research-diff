@@ -21,9 +21,9 @@ WORK_EXT = {".py", ".ipynb", ".r", ".jl", ".m", ".sh", ".c", ".cc", ".cpp", ".cu
             ".hdf5", ".pkl", ".pt", ".log"}
 
 
-def detect(files: List[str], cfg: Dict[str, Any]) -> List[dict]:
+def detect(files: List[str], cfg: Dict[str, Any], read=None) -> List[dict]:
     """The studies of a repository, in order: those research-diff.toml names; else the top-level folders that each
-    hold a paper and work of their own (two or more, or none)."""
+    hold a paper (a LaTeX document: \\documentclass) and work of their own (two or more, or none)."""
     given = cfg.get("studies")
     if given is False:                 # studies = false: the repository is one study
         return []
@@ -38,16 +38,29 @@ def detect(files: List[str], cfg: Dict[str, Any]) -> List[dict]:
     from system_diff.extract import glob_rx
     extra = [glob_rx(g) for g in cfg.get("paper", []) if not str(g).endswith(".tex")]   # a Markdown paper, named
     tops: Dict[str, set] = {}
+    tex: Dict[str, List[str]] = {}
     for f in files:
         parts = PurePosixPath(f).parts
         if len(parts) < 2 or parts[0].startswith("."):
             continue
         signs = tops.setdefault(parts[0], set())
         ext = PurePosixPath(f).suffix.lower()
-        if ext in PAPER_EXT or (extra and any(r.match(f) for r in extra)):
+        if extra and any(r.match(f) for r in extra):
             signs.add("paper")
+        elif ext in PAPER_EXT:
+            tex.setdefault(parts[0], []).append(f)
         elif ext in WORK_EXT:
             signs.add("work")
+    for d, got in tex.items():         # a LaTeX document of its own (\documentclass), not a table or a snippet
+        if read is None:
+            tops[d].add("paper")
+            continue
+        try:
+            texts = read(got[:40])
+        except Exception:  # noqa: BLE001
+            texts = {}
+        if any("\\documentclass" in str(t)[:20000] for t in texts.values()):
+            tops[d].add("paper")
     dirs = [d for d, signs in tops.items() if {"paper", "work"} <= signs]
     if len(dirs) < 2:
         return []
