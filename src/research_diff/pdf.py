@@ -41,6 +41,32 @@ def _stamp(root: Path, files: List[str]) -> str:
     return h.hexdigest()
 
 
+def find() -> Tuple[str, str]:
+    """(program, kind) that builds the PDF: RESEARCH_DIFF_PDFLATEX, else pdflatex on the PATH, else where TeX Live,
+    MiKTeX and MacTeX put it, else tectonic; ("", "") when there is none."""
+    import glob
+    said = os.environ.get("RESEARCH_DIFF_PDFLATEX", "").strip().strip('"')
+    if said:
+        return (said, "tectonic" if "tectonic" in Path(said).name.lower() else "pdflatex") if Path(said).is_file() \
+            else ("", "")
+    got = shutil.which("pdflatex")
+    if got:
+        return got, "pdflatex"
+    home, local = os.environ.get("USERPROFILE", ""), os.environ.get("LOCALAPPDATA", "")
+    places = [os.path.join(local, "Programs", "MiKTeX", "miktex", "bin", "x64", "pdflatex.exe"),
+              os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "MiKTeX", "miktex", "bin", "x64",
+                           "pdflatex.exe"),
+              os.path.join(home, "AppData", "Local", "Programs", "MiKTeX", "miktex", "bin", "x64", "pdflatex.exe"),
+              "/Library/TeX/texbin/pdflatex", "/usr/local/texlive/*/bin/*/pdflatex",
+              r"C:\texlive\*\bin\win*\pdflatex.exe", r"C:\texlive\*\bin\windows\pdflatex.exe"]
+    for pattern in places:
+        for hit in sorted(glob.glob(pattern), reverse=True):
+            if os.path.isfile(hit):
+                return hit, "pdflatex"
+    got = shutil.which("tectonic")
+    return (got, "tectonic") if got else ("", "")
+
+
 def status(root: Path, main: str) -> dict:
     try:
         return json.loads((_dir(root, main) / "status.json").read_text(encoding="utf-8"))
@@ -63,9 +89,11 @@ def ensure(root: Path, main: str, files: List[str], done=None) -> dict:
     """Build the PDF in the background unless it is current; the status ({"state": building|ready|failed|missing,
     "why"}) as it is now."""
     root = Path(root)
-    exe = shutil.which("pdflatex")
-    if exe is None:
-        return {"state": "missing", "why": "pdflatex is not on the PATH (TeX Live, MiKTeX)"}
+    exe, kind = find()
+    if not exe:
+        return {"state": "missing", "why": "No pdflatex found: not on this program's PATH, nor where MiKTeX or TeX Live "
+                "install it. Set RESEARCH_DIFF_PDFLATEX to its full path (where.exe pdflatex in PowerShell shows it), "
+                "or install tectonic, then start the page again."}
     stamp = _stamp(root, files)
     st = status(root, main)
     if st.get("stamp") == stamp and st.get("state") in ("ready", "failed"):
@@ -80,8 +108,8 @@ def ensure(root: Path, main: str, files: List[str], done=None) -> dict:
             _write_status(root, main, state="building", stamp=stamp)
             src = root / main
             out = _dir(root, main)
-            args = [exe, "-interaction=nonstopmode", "-halt-on-error", "-synctex=1", f"-output-directory={out}",
-                    src.name]
+            args = [exe, "--synctex", "--keep-logs", "--outdir", str(out), src.name] if kind == "tectonic" else \
+                [exe, "-interaction=nonstopmode", "-halt-on-error", "-synctex=1", f"-output-directory={out}", src.name]
             flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
             try:
                 r = subprocess.run(args, cwd=src.parent, capture_output=True, text=True, errors="replace",
@@ -157,7 +185,7 @@ def page_html(src: str, state: dict) -> str:
         return (f'<!doctype html><meta charset="utf-8"><style>html,body{{margin:0;height:100%}}iframe{{border:0;'
                 f'width:100%;height:100%}}</style><iframe src="{html.escape(src)}" title="The paper as a PDF"></iframe>')
     words = {"building": "Building the PDF with pdflatex… this page shows it when it is ready.",
-             "failed": "pdflatex could not build the PDF:", "missing": "No PDF: pdflatex is not installed here."}
+             "failed": "pdflatex could not build the PDF:", "missing": "No PDF yet: research-diff found no pdflatex."}
     return ('<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="5">'
             '<body style="font:14px system-ui;padding:16px;color:#556">'
             f'<p>{html.escape(words.get(state.get("state"), "No PDF yet."))}</p>'

@@ -799,7 +799,7 @@ def _pdf_section(S: dict, at: dict) -> dict:
     files = [x["path"] for x in S["map"].get("paper", [])]
     st = pdf.ensure(S["root"], at["main"], files, done=lambda: _ping(S["root"]))
     said = {"ready": "built with pdflatex · turned to this section", "building": "building with pdflatex…",
-            "failed": "pdflatex failed: the log is in the frame", "missing": "pdflatex is not installed here"}
+            "failed": "pdflatex failed: the log is in the frame", "missing": "no pdflatex found: the frame says how to point to it"}
     q = urlencode({"main": at["main"], "file": at["file"], "line": at["line"], "v": st.get("stamp", "")[:8]})
     return {"title": "The PDF", "aside": said.get(st.get("state"), ""), "kind": "frame",
             "items": [{"src": "/x/research/pdf?" + q, "height": 900}]}

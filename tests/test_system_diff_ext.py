@@ -479,3 +479,19 @@ def test_the_paper_tab_shows_the_pdf_turned_to_the_section(repo, files, monkeypa
     status, kind, body = x.route(ctx(repo, ""), "GET", "pdf/file", {"main": "paper/main.tex"}, b"")
     assert status == 200 and kind == "application/pdf" and body.startswith(b"%PDF")
     assert x.route(ctx(repo, ""), "GET", "pdf/file", {"main": "../etc/passwd"}, b"")[0] == 404
+
+
+def test_the_pdf_builder_is_found_where_tex_installs_it(monkeypatch, tmp_path):
+    from research_diff import pdf
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setenv("RESEARCH_DIFF_PDFLATEX", "")
+    monkeypatch.setattr(pdf.shutil, "which", lambda name: None)
+    monkeypatch.setattr("glob.glob", lambda pattern: [])
+    assert pdf.find() == ("", "")
+    exe = tmp_path / "pdflatex.exe"
+    exe.write_text("")
+    monkeypatch.setenv("RESEARCH_DIFF_PDFLATEX", str(exe))                       # named exactly
+    assert pdf.find() == (str(exe), "pdflatex")
+    monkeypatch.setenv("RESEARCH_DIFF_PDFLATEX", "")
+    monkeypatch.setattr("glob.glob", lambda pattern: [str(exe)] if "MiKTeX" in pattern else [])
+    assert pdf.find() == (str(exe), "pdflatex")                                  # where MiKTeX puts it
