@@ -238,7 +238,7 @@ def _resolve(base: str, ref: str, files: set) -> Optional[str]:
     return None
 
 
-def extract(source, cfg: Dict[str, Any], scope: Optional[Tuple[str, List[str]]] = None) -> dict:
+def extract(source, cfg: Dict[str, Any], scope: Optional[Tuple[str, List[str]]] = None, progress=None) -> dict:
     """The research map of one source (a commit, a snapshot of the working tree, or a folder). `scope`: one study of
     a repository holding several, as (its folder, the other studies' folders): its own files (results/<study>/...
     too) and those at the repository's top. Scripts and configs that held no research when last read (by content)
@@ -303,11 +303,17 @@ def extract(source, cfg: Dict[str, Any], scope: Optional[Tuple[str, List[str]]] 
     root = getattr(source, "root", None)
     seen = scan.Seen(source, root, on_disk=getattr(source, "label", "") == "working tree") if root else None
     candidates = pick(cfg["scripts"]) + pick(cfg["configs"])
-    for f, text in source.read_many(seen.wanted(candidates) if seen else candidates).items():
-        if not scan.holds_research(text):           # most of them: logs, outputs, plain code
-            if seen:
+    want = seen.wanted(candidates) if seen else candidates
+    texts: Dict[str, str] = {}
+    for i in range(0, len(want), 300):               # in batches: `progress` says how far the reading is
+        for f, t in source.read_many(want[i:i + 300]).items():
+            if scan.holds_research(t):
+                texts[f] = t
+            elif seen:                                  # most of them: logs, outputs, plain code
                 seen.note(f, False)
-            continue
+        if progress is not None:
+            progress(min(i + 300, len(want)), len(want))
+    for f, text in texts.items():
         if seen:
             seen.note(f, True)
         read_comment(m, text, f, def_rx)

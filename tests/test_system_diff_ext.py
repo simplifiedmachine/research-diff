@@ -144,7 +144,7 @@ def test_its_own_pages_and_the_auto_research_controls(study):
 def test_the_paper_opens_in_system_diffs_viewer_by_sections(study):
     c = ctx(study, "paper")
     page = x.web(c)
-    assert not any(s["kind"] == "frame" for s in page["sections"])
+    assert [s["title"] for s in page["sections"] if s["kind"] == "frame"] == ["The PDF"]   # the only frame
     secs = page["diagram"]["files"]
     assert {v["path"] for v in secs.values()} == {"paper/main.tex"}
     assert [v["line"] for v in secs.values()] == sorted(v["line"] for v in secs.values())
@@ -347,3 +347,135 @@ def test_files_without_research_are_read_once(repo, files):
     changed = ex.extract(Counting(repo), cfg)
     assert [p for p in Counting.asked if p.startswith("results/log")] == ["results/log3.json"]
     assert "E9" in changed["nodes"]
+
+
+def _two_studies(repo, files):
+    files(repo, {"a/paper/main.tex": "\\section{R}\n\n% C1: Alpha\n% relies on: R1\nYes.\n", "a/run.py": "print(1)\n",
+                 "a/notes.md": "## R1: Alpha holds\n\nmetrics: acc=0.9\n",
+                 "b/paper/main.tex": "% C1: Beta\n", "b/run.py": "print(2)\n"})
+
+
+def test_a_study_is_read_again_only_when_its_own_files_change(repo, files, no_system_list, monkeypatch):
+    from research_diff import extract as ex
+    _two_studies(repo, files)
+    x.state(ctx(repo, "evidence", "a@", live=engine_live(repo, "v1")))
+    x.state(ctx(repo, "evidence", "b@", live=engine_live(repo, "v1")))
+    calls = []
+    real = ex.extract
+    monkeypatch.setattr(ex, "extract", lambda *a, **k: calls.append(a[2][0] if a[2] else "") or real(*a, **k))
+    files(repo, {"b/run.py": "print(3)\n"})                                      # study b changes, a does not
+    x.state(ctx(repo, "evidence", "a@", live=engine_live(repo, "v2")))
+    assert calls == []
+    x.state(ctx(repo, "evidence", "b@", live=engine_live(repo, "v2")))
+    assert calls == ["b"]
+    assert x.progress_text(repo, "a") == "ready · 1 claim, all supported"
+    assert x.progress_text(repo, "b") == "ready · 1 with nothing behind it"
+
+
+def test_the_checkpoint_read_back_from_disk_gives_the_same_diff(repo, files, no_system_list):
+    _two_studies(repo, files)
+    first = x.state(ctx(repo, "check", "a@", live=engine_live(repo, "v1")))
+    x._BASE.clear()
+    x._STATE.clear()
+    again = x.state(ctx(repo, "check", "a@", live=engine_live(repo, "v1")))      # its base from the file
+    assert again["cmp"].diff["changes"] == first["cmp"].diff["changes"]
+    assert again["cmp"].diff["headline"] == first["cmp"].diff["headline"]
+
+
+def test_every_study_is_read_in_the_background_with_its_progress(repo, files, no_system_list, monkeypatch):
+    _two_studies(repo, files)
+    monkeypatch.setenv("RESEARCH_DIFF_WARM", "on")
+    page = x.web(ctx(repo, "research", "a@", live=engine_live(repo, "w1")))
+    x._WORKERS[str(repo)].join(30)
+    assert x.progress_text(repo, "b").startswith(("ready", "no claims"))           # read without being opened
+    rows = {n["id"]: n["sub"] for n in page["nav"] if not n["id"].startswith("~")}
+    assert rows["a"].startswith("ready")                                            # each row says what it holds
+    assert [p["why"] for p in x.projects(ctx(repo, "", live=engine_live(repo, "w1")))][0].startswith("ready")
+    assert x.progress(ctx(repo, "paper", "b@", live=engine_live(repo, "w1"))) == ""          # read: nothing under way
+    x._note(repo, "b", stage="reading files", done=40, total=100)
+    assert x.progress(ctx(repo, "paper", "b@", live=engine_live(repo, "w1"))) == "reading files 40% · 40 of 100 files"
+
+
+def _long_paper(repo, files):
+    """4 sections, 5 subsections each, 11 tables \\input from them; a table and a claim with stale numbers."""
+    tex = ["\\documentclass{article}", "\\begin{document}"]
+    k = 0
+    for i in range(4):
+        tex += [f"\\section{{Part {i}}}", ""]
+        for j in range(5):
+            tex += [f"\\subsection{{Topic {i}.{j}}}", "", f"Words about {i}.{j}.", ""]
+        for _ in range(3 if i < 3 else 2):
+            k += 1
+            tex += [f"\\input{{tables/t{k}}}", ""]
+    tex[tex.index("\\section{Part 2}") + 2:tex.index("\\section{Part 2}") + 2] = [
+        "% C1: Small batches win", "% relies on: E1", "Batch 32 reaches 86.1\\% here.", ""]
+    tex += ["\\end{document}", ""]
+    tables = {f"paper/tables/t{n}.tex": f"\\begin{{tabular}}{{lr}}\nb32 & {87.4 if n != 5 else 86.9}\\% \\\\\n"
+              "\\end{tabular}\n" for n in range(1, 12)}
+    files(repo, {"paper/main.tex": "\n".join(tex), **tables,
+                 "paper/notes-figure.tex": "A loose file no section inputs.\n"})
+
+
+def test_a_long_paper_is_drawn_by_its_sections(repo, files):
+    _long_paper(repo, files)
+    page = x.web(extensions.Context(repo, "paper", "", 140, 1, None))              # compact
+    boxes = [k for k in page["diagram"]["details"]]
+    assert len([b for b in boxes if b != "b:other"]) == 4 and "b:other" in boxes   # 4 sections, plus Other files
+    svg = page["diagram"]["svg"]
+    assert "Topic 0.1" not in svg and "tables 3" in svg                             # parts fold, tables are a chip
+    part2 = next(k for k, d in page["diagram"]["details"].items() if d["title"] == "§ Part 2")
+    assert page["diagram"]["enter"][part2]["view"] == "paper"
+    need = next(sec for sec in page["sections"] if sec["title"] == "Needs attention")["items"]
+    assert need[0]["text"].startswith("§ Part 2")                                   # worst first: the stale claim
+    detailed = x.web(extensions.Context(repo, "paper", "", 140, 0, None))
+    assert "Topic 0.1" in detailed["diagram"]["svg"]                                # detailed lists the parts
+    outline = x.web(extensions.Context(repo, "paper", "", 140, 2, None))
+    assert "tables 3" not in outline["diagram"]["svg"]                              # outline: the sections alone
+    opened = x.web(extensions.Context(repo, "paper", page["diagram"]["enter"][part2]["part"], 140, 1, None))
+    titles = [d["title"] for d in opened["diagram"]["details"].values()]
+    assert [t for t in titles if t.startswith("Topic")] == [f"Topic 2.{j}" for j in range(5)]
+    assert {"paper/tables/t7.tex", "paper/tables/t8.tex", "paper/tables/t9.tex"} <= set(titles)
+    assert all(f["path"].startswith("paper/") for f in opened["diagram"]["files"].values())   # each opens its file
+
+
+FAKE_PDFLATEX = r"""#!/usr/bin/env python3
+import gzip, os, sys
+out = [a.split("=", 1)[1] for a in sys.argv if a.startswith("-output-directory=")][0]
+src = sys.argv[-1]
+stem = os.path.splitext(src)[0]
+open(os.path.join(out, stem + ".pdf"), "wb").write(b"%PDF-1.4 fake")
+with gzip.open(os.path.join(out, stem + ".synctex.gz"), "wt") as f:
+    f.write("SyncTeX Version:1\nInput:1:./" + src + "\nContent:\n{1\n(1,1:0,0:0,0,0\n}1\n{2\n(1,40:0,0:0,0,0\n}2\n")
+"""
+
+
+@pytest.mark.skipif(__import__("os").name == "nt", reason="the stand-in pdflatex is a script with a #! line")
+def test_the_paper_tab_shows_the_pdf_turned_to_the_section(repo, files, monkeypatch, tmp_path):
+    import os
+    import stat
+    from research_diff import pdf
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    exe = bin_ / "pdflatex"
+    exe.write_text(FAKE_PDFLATEX)
+    exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("PATH", f"{bin_}{os.pathsep}" + os.environ["PATH"])
+    tex = ["\\documentclass{article}", "\\begin{document}"] + ["\\section{One}", "", "a", "", "b"] + [""] * 30 + \
+        ["\\section{Two}", "\\subsection{Two.a}", "", "c", "\\end{document}"]
+    files(repo, {"paper/main.tex": "\n".join(tex)})
+    page = x.web(extensions.Context(repo, "paper", "", 140, 1, None))
+    frame = next(s for s in page["sections"] if s["title"] == "The PDF")
+    for t in list(pdf._JOBS.values()):
+        t.join(30)
+    assert pdf.status(repo, "paper/main.tex")["state"] == "ready"
+    two = next(k for k, d in page["diagram"]["details"].items() if d["title"] == "§ Two")
+    opened = x.web(extensions.Context(repo, "paper", page["diagram"]["enter"][two]["part"], 140, 1, None))
+    src = next(s for s in opened["sections"] if s["title"] == "The PDF")["items"][0]["src"]
+    assert frame["kind"] == "frame" and src.startswith("/x/research/pdf?") and "line=38" in src
+    from urllib.parse import parse_qsl, urlsplit
+    q = dict(parse_qsl(urlsplit(src).query))
+    status, kind, body = x.route(ctx(repo, ""), "GET", "pdf", q, b"")
+    assert status == 200 and b"#page=2" in body                                    # section Two is on page 2
+    status, kind, body = x.route(ctx(repo, ""), "GET", "pdf/file", {"main": "paper/main.tex"}, b"")
+    assert status == 200 and kind == "application/pdf" and body.startswith(b"%PDF")
+    assert x.route(ctx(repo, ""), "GET", "pdf/file", {"main": "../etc/passwd"}, b"")[0] == 404

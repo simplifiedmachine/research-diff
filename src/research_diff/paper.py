@@ -256,14 +256,21 @@ def check(papers: List[dict], nodes: Dict[str, dict], links: List[tuple]) -> Tup
                     "from": hit[0], "to": target, "sign": "+", "file": where, "line": num["line"],
                     "why": f"{_say(num)} in {target} matches {hit[0]} {hit[1]} = {hit[2]:g}"})
             elif how == "stale":
-                why = f"{target} says {_say(num)} ({where}:{num['line']}), but {hit[0]} {hit[1]} is {hit[2]:g}"
+                form = min(_forms(hit[2], num), key=lambda f: abs(f - num["value"]))
+                dec = num["decimals"]
+                printed = f"{form:.{dec}f}" + ("%" if num["pct"] else "")
+                last = abs(form - num["value"]) <= 1.5 * 10 ** -dec      # only the last printed digit differs
+                why = (f"{target} says {_say(num)} ({where}:{num['line']}), but {hit[0]} {hit[1]} is {hit[2]:.6g}"
+                       + (f", {printed} at the digits printed" if printed.rstrip("%") != f"{hit[2]:.6g}" else "")
+                       + ("; only the last digit differs" if last else ""))
                 if target.startswith("§"):
                     issues.append({"node": target, "file": where, "line": num["line"], "section": section,
                                    "says": _say(num), "from": hit[0], "metric": hit[1], "value": hit[2], "why": why,
-                                   "text": text})
+                                   "text": text, "last_digit": last})
                 else:
                     checks[(hit[0], target, "-", num["line"])] = {"from": hit[0], "to": target, "sign": "-",
-                                                                  "file": where, "line": num["line"], "why": why}
+                                                                  "file": where, "line": num["line"], "why": why,
+                                                                  "last_digit": last}
 
     for p in papers:
         for fl in p["floats"]:

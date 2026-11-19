@@ -85,7 +85,8 @@ _BASE: Dict[tuple, dict] = {}
 # ── the research, read once per version ────────────────────────────────────────────────────────────────────────────
 
 # research-diff's files that the research's state is not made of: their writes must not read the research again
-NOT_STATE = ("summaries", "history.jsonl", "agent-usage.json", "notices.jsonl", "auto", "suggest.patch")
+NOT_STATE = ("summaries", "history.jsonl", "agent-usage.json", "notices.jsonl", "auto", "suggest.patch",
+             "progress.json")
 
 
 def _stamp(root: Path) -> tuple:
@@ -139,15 +140,47 @@ def _submodule_files(root: Path, src, ident) -> List[str]:
     got = _SUBS.get(key)
     if got is not None and got[0] == ident and ident is not None and time.time() - got[1] < SUBS_FOR:
         return got[2]
-    from system_diff.sources import git
-    try:
-        listed = git("ls-files", "-z", "-c", "--recurse-submodules", cwd=root).split("\0")
-    except Exception:  # noqa: BLE001
-        listed = []
+    listed = _submodule_index(root)
+    if listed is None:
+        from system_diff.sources import git
+        try:
+            listed = git("ls-files", "-z", "-c", "--recurse-submodules", cwd=root).split("\0")
+        except Exception:  # noqa: BLE001
+            listed = []
     known = set(src.files)
     extra = [f for f in listed if f and f not in known]
     _SUBS[key] = (ident, time.time(), extra)
     return extra
+
+
+def _submodule_index(root: Path) -> Optional[List[str]]:
+    """The tracked files of the repository's submodules, from their own index files: no git program started (one
+    start costs seconds on some machines). None when one cannot be read that way."""
+    import re as _re
+    try:
+        from system_diff import gitfs
+        text = (root / ".gitmodules").read_text(encoding="utf-8", errors="replace")
+    except Exception:  # noqa: BLE001
+        return None
+    out: List[str] = []
+    for path in _re.findall(r"^\s*path\s*=\s*(.+?)\s*$", text, _re.M):
+        path = path.strip().strip('"').replace("\\", "/").strip("/")
+        dot = root / path / ".git"
+        try:
+            if dot.is_file():
+                gd = dot.read_text(encoding="utf-8").strip()
+                if not gd.startswith("gitdir:"):
+                    return None
+                gdir = (dot.parent / gd[len("gitdir:"):].strip()).resolve()
+            elif dot.is_dir():
+                gdir = dot
+            else:
+                continue                       # not checked out
+            entries, _unmerged = gitfs.read_index(gdir / "index")
+        except Exception:  # noqa: BLE001 - a split index, a new format: git lists them
+            return None
+        out += [f"{path}/{f}" for f, e in entries.items() if e.mode != "160000"]
+    return out
 
 
 def _source(ctx):
@@ -235,29 +268,167 @@ def _system_projects(root: Path):
         return None
 
 
-def _study_state(ctx, src, ident, root: Path, cfg: dict, found: List[dict], sid: str) -> dict:
-    from . import activity, agents, chat, compare, evidence, objectives, rank, review, studies
-    from .diff import diff
+_PROGRESS: Dict[tuple, dict] = {}     # (root, study) → {"stage", "done", "total", "summary", "error", "at"}
+_BUSY: Dict[tuple, threading.Lock] = {}
+_WORKERS: Dict[str, threading.Thread] = {}
+PROGRESS = "progress.json"            # under .git/research-diff/: written when a study is read, so pages ask again
+
+
+def _note(root: Path, sid: str, **what) -> None:
+    with _LOCK:
+        p = _PROGRESS.setdefault((str(root), sid), {})
+        if what.get("stage") not in (None, "reading files"):
+            p.pop("done", None)
+            p.pop("total", None)
+        p.update(what, at=time.time())
+
+
+def progress_text(root: Path, sid: str) -> str:
+    """One study, in the words its row shows: what is being read, or what it holds once read."""
+    with _LOCK:
+        p = dict(_PROGRESS.get((str(root), sid)) or {})
+    if not p:
+        return "not read yet"
+    if p.get("stage") == "ready":
+        return p.get("summary") or "ready"
+    if p.get("stage") == "failed":
+        return "failed: " + str(p.get("error") or "")[:90]
+    if p.get("total"):
+        done, total = int(p.get("done") or 0), int(p["total"])
+        return f"{p['stage']} {100 * done // max(total, 1)}% · {done} of {total} files"
+    return f"{p.get('stage') or 'reading'}…"
+
+
+def _summary(S: dict) -> str:
+    g, bp = S["graph"], S["map"]
+    st = g["statements"]
+    stale = sum(1 for c in bp.get("checks", []) if c.get("sign") == "-") + len(bp.get("issues", []))
+    if not st and not stale:
+        papers = len(bp.get("paper", []))
+        return f"no claims marked yet · {papers} paper file{'' if papers == 1 else 's'}" if papers else \
+            "no paper found"
+    bad = sum(1 for x in st if x["verdict"] == "contradicted")
+    mixed = sum(1 for x in st if x["verdict"] == "contested")
+    bare = sum(1 for x in st if x["verdict"] == "unsupported" and x["kind"] in NEEDS_EVIDENCE)
+    said = [f"✗ {stale} stale number{'' if stale == 1 else 's'}" if stale else "",
+            f"{bad} contradicted" if bad else "", f"{mixed} contested" if mixed else "",
+            f"{bare} with nothing behind {'it' if bare == 1 else 'them'}" if bare else ""]
+    said = [x for x in said if x]
+    return "ready · " + (" · ".join(said) if said else
+                         f"{len(st)} claim{'' if len(st) == 1 else 's'}, all supported")
+
+
+def _ping(root: Path) -> None:
+    """A study was read: move system-diff's version (it watches .git/research-diff/), so the pages and the list ask
+    again. research-diff's own state is not made of this file (NOT_STATE)."""
+    try:
+        from . import store
+        with _LOCK:
+            ready = sorted(sid for (r, sid), p in _PROGRESS.items() if r == str(root) and p.get("stage") == "ready")
+        store.write(root, PROGRESS, {"at": time.time(), "ready": ready})
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _inputs(src, root: Path, sc, cfg: dict) -> str:
+    """What one study's state is made of: its own files (their blob ids; size and time for files read from disk), and
+    the configuration. Another study's edits leave it as it is."""
+    import hashlib
+    from . import studies
+    h = hashlib.sha1(json.dumps(cfg, sort_keys=True, default=str).encode())
+    blobs = getattr(src, "blobs", None) or {}
+    mine = sc[0] if sc else None
+    for f in src.files:
+        if mine is not None and not studies.of_study(f, mine):
+            continue
+        b = blobs.get(f)
+        if b is None:
+            try:
+                st = os.stat(root / f)
+                b = f"{st.st_size}:{st.st_mtime_ns}"
+            except OSError:
+                b = "-"
+        h.update(f"{f}\0{b}\n".encode("utf-8", "replace"))
+    return h.hexdigest()
+
+
+def _base(root: Path, sha: str, label: str, sid: str, cfg: dict, sc) -> dict:
+    """The study at the checkpoint's commit (its submodules' papers at the commits it records): in memory, and on disk
+    beside research-diff's folder, so a restart of the engine does not read it again."""
+    import hashlib
+    from . import compare, store
     from .extract import extract
-    key = (str(root), ident, sid, _stamp(root)) if ident is not None else None
-    if key is not None:
+    ck = json.dumps(cfg, sort_keys=True, default=str)
+    bkey = (str(root), sha, sid, ck)
+    with _LOCK:
+        got = _BASE.get(bkey)
+    if got is not None:
+        return got
+    name = "base-" + hashlib.sha1(f"{sha}\0{sid}\0{ck}".encode()).hexdigest()[:20] + ".json"
+    try:
+        d = store.home(root).parent / "research-diff-cache"
+        f = d / name
+        got = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        got = None
+    if got is None:
+        got = extract(compare.CommitTree(sha, root), cfg, sc)
+        try:
+            d.mkdir(exist_ok=True)
+            tmp = d / f".{name}.{os.getpid()}.tmp"
+            tmp.write_text(json.dumps(got, default=list), encoding="utf-8")
+            os.replace(tmp, d / name)
+        except (OSError, TypeError, ValueError, NameError):
+            pass
+    got["ref"] = label
+    with _LOCK:
+        _BASE[bkey] = got
+        while len(_BASE) > 16:
+            _BASE.pop(next(iter(_BASE)))
+    return got
+
+
+def _study_state(ctx, src, ident, root: Path, cfg: dict, found: List[dict], sid: str) -> dict:
+    """One study read: its map, the diff since the checkpoint, its evidence; kept while its own files, research-diff's
+    state and the checkpoint stay the same. One reading of a study at a time (the background reader and a page ask
+    for the same one: the second waits for the first)."""
+    from . import studies
+    sc = studies.scope(found, sid)
+    key = (str(root), sid, _inputs(src, root, sc, cfg), _stamp(root))
+    with _LOCK:
+        if key in _STATE:
+            return _STATE[key]
+        busy = _BUSY.setdefault((str(root), sid), threading.Lock())
+    with busy:
         with _LOCK:
             if key in _STATE:
                 return _STATE[key]
-    sc = studies.scope(found, sid)
-    after = extract(src, cfg, sc)
-    after["ref"] = "working tree"
-    sha, label = compare.resolve(root, "checkpoint")
-    bkey = (str(root), sha, sid, json.dumps(cfg, sort_keys=True, default=str))
-    with _LOCK:
-        before = _BASE.get(bkey)
-    if before is None:                 # the checkpoint's commit, with its submodules' papers at the commits it records
-        before = extract(compare.CommitTree(sha, root), cfg, sc)
-        before["ref"] = label
+        try:
+            out = _read_study(src, root, cfg, sid, sc)
+        except Exception as exc:
+            _note(root, sid, stage="failed", error=f"{type(exc).__name__}: {exc}")
+            raise
         with _LOCK:
-            _BASE[bkey] = before
-            while len(_BASE) > 16:
-                _BASE.pop(next(iter(_BASE)))
+            _STATE[key] = out
+            while len(_STATE) > 24:
+                _STATE.pop(next(iter(_STATE)))
+        _note(root, sid, stage="ready", summary=_summary(out))
+        _ping(root)
+    return out
+
+
+def _read_study(src, root: Path, cfg: dict, sid: str, sc) -> dict:
+    from . import activity, agents, chat, compare, evidence, objectives, rank, review
+    from .diff import diff
+    from .extract import extract
+    _note(root, sid, stage="reading files", done=0, total=0)
+    after = extract(src, cfg, sc, progress=lambda done, total: _note(root, sid, stage="reading files", done=done,
+                                                                     total=total))
+    after["ref"] = "working tree"
+    _note(root, sid, stage="reading the checkpoint")
+    sha, label = compare.resolve(root, "checkpoint")
+    before = _base(root, sha, label, sid, cfg, sc)
+    _note(root, sid, stage="checking the evidence")
     c = compare.Comparison(diff(before, after, cfg), before, after, cfg, label)
     g = evidence.build(c.after, c.cfg, agents.owners(root))
     g["notes"] = {k: [n["text"] for n in v] for k, v in chat.notes_by_node(root).items()}
@@ -265,15 +436,36 @@ def _study_state(ctx, src, ident, root: Path, cfg: dict, found: List[dict], sid:
     objs = objectives.current(root)
     rv = review.current(root)
     worth = sorted(review.worth(rv) + rank.worth_a_look(c.diff, c.after, 6, objs), key=lambda x: -x["score"])[:7]
-    out = {"cmp": c, "map": c.after, "graph": g, "objectives": objs, "review": rv, "worth": worth,
-           "focus": activity.focus(root, c.after), "request": activity.last_request(root), "root": root,
-           "notes": chat.notes_by_node(root), "pointing": chat.pointing(root)}
-    if key is not None:
-        with _LOCK:
-            _STATE[key] = out
-            while len(_STATE) > 24:
-                _STATE.pop(next(iter(_STATE)))
-    return out
+    return {"cmp": c, "map": c.after, "graph": g, "objectives": objs, "review": rv, "worth": worth,
+            "focus": activity.focus(root, c.after), "request": activity.last_request(root), "root": root,
+            "notes": chat.notes_by_node(root), "pointing": chat.pointing(root)}
+
+
+def warm(ctx, S: dict) -> None:
+    """Read every study in the background, the one shown first, one at a time (a second reader would only compete
+    for the same disk and the same interpreter): switching to a study read before takes no time, and each row of the
+    list says how far its study is."""
+    found = S.get("studies") or []
+    said = os.environ.get("RESEARCH_DIFF_WARM", "").lower()
+    if len(found) < 2 or said in ("0", "off", "no") or (os.environ.get("PYTEST_CURRENT_TEST") and said != "on"):
+        return
+    root = str(Path(ctx.root))
+    with _LOCK:
+        t = _WORKERS.get(root)
+        if t is not None and t.is_alive():
+            return
+    order = [S["study"]] + [x["id"] for x in found if x["id"] != S["study"]]
+
+    def run() -> None:
+        for sid in order:
+            try:
+                state(dataclasses.replace(ctx, part=sid + "@"))
+            except Exception:  # noqa: BLE001 - said in its row (failed: …)
+                continue
+    t = threading.Thread(target=run, name="research-diff studies", daemon=True)
+    with _LOCK:
+        _WORKERS[root] = t
+    t.start()
 
 
 def _part(S: dict, node: str = "") -> str:
@@ -289,7 +481,8 @@ def _nav(S: dict, view: str) -> List[dict]:
     if S.get("split_off"):
         return [{"id": SPLIT, "title": f"Split into {S['could_split']} studies", "sub": "found from the folders",
                  "active": False, "target": {"view": view, "part": SPLIT + "@"}}]
-    items = [{"id": x["id"], "title": x["title"], "sub": x["path"], "active": x["id"] == S["study"],
+    items = [{"id": x["id"], "title": x["title"], "sub": progress_text(S["root"], x["id"]),
+              "active": x["id"] == S["study"],
               "target": {"view": view, "part": x["id"] + "@", "scope": x["path"]}} for x in S.get("studies", [])]
     if items:
         items.append({"id": ONE, "title": "Show as one study", "sub": "if these are not separate works",
@@ -522,6 +715,7 @@ def studies_model(ctx, S: dict) -> dict:
 def web(ctx) -> dict:
     out = _web(ctx)
     S = state(ctx)
+    warm(ctx, S)
     if (S["studies"] or S.get("split_off")) and S.get("own_list", True):
         out["nav"] = _nav(S, ctx.view)
         out["nav_title"] = "Studies"
@@ -532,7 +726,7 @@ def web(ctx) -> dict:
 
 
 def _web(ctx) -> dict:
-    from . import autoresearch, graph, paperview, review
+    from . import autoresearch, graph
     S = state(ctx)
     g, part, view = S["graph"], S["rest"], ctx.view
     if view == "check":
@@ -551,55 +745,22 @@ def _web(ctx) -> dict:
             sections.append({"title": "Contradictions", "aside": "", "kind": "notes", "items": _notes(bad)})
         sections.append({"title": "Statements", "aside": "worst first", "kind": "notes",
                          "items": _notes(_statement_notes(g))})
+        if not g["statements"]:
+            sections.insert(0, {"title": "No statements yet", "aside": "", "kind": "notes",
+                                "items": _notes(_where_from(S))})
         return {"title": "Evidence", "headline": g["headline"],
                 "diagram": _web_diagram(S, model, "evidence", f"Evidence of {part}" if part else "Evidence",
                                         "hover a box for what supports and contradicts it · click to zoom in", part),
                 "sections": sections}
     if view == "paper":
-        files = [x["path"] for x in S["map"].get("paper", [])]
-        nodes, where, details, sections = [], {}, {}, []
-        for path in files:
-            o = paperview.outline(S["root"], path, S["map"], g)
-            summ = o.get("summary") or {}
-            for c in o["chunks"]:
-                bad = [n for n in c["numbers"] if n["sign"] == "-"]
-                ok = sum(1 for n in c["numbers"] if n["sign"] == "+")
-                verdicts = [st["verdict"] for st in c["statements"]]
-                worst = "removed" if bad or "contradicted" in verdicts else "changed" if "contested" in verdicts \
-                    else "added" if c["statements"] or ok else "same"
-                bid = f"sec:{path}:{c['line']}"
-                lines = [{"text": f"{st['id']} {SIGN.get(st['verdict'] or 'unsupported', '·')} {st['verdict'] or st['kind']}",
-                          "status": STATUS.get(st["verdict"] or "unsupported", "same")} for st in c["statements"][:3]]
-                if ok or bad:
-                    lines.append({"text": f"numbers: ✓ {ok}" + (f"  ✗ {len(bad)} stale" if bad else ""),
-                                  "status": "removed" if bad else "added"})
-                nodes.append({"id": bid, "col": path, "title": "§ " + c["title"], "status": worst, "type": "component",
-                              "sub": f"lines {c['line']}-{c['end']}", "lines": lines})
-                where["b:" + bid] = {"path": path, "line": c["line"], "end": c["end"]}
-                cs = (summ.get("sections") or {}).get(c["title"], {})
-                details["b:" + bid] = {
-                    "title": "§ " + c["title"], "headline": cs.get("says") or f"{len(c['statements'])} statements",
-                    "how": [x for x in (cs.get("claims"),) if x], "insights": [x for x in (cs.get("watch"),) if x]
-                    + [n["why"] for n in bad[:3]], "inside": f"Click to open {path} here",
-                    "facts": [{"title": "Statements", "summary": ", ".join(st["id"] for st in c["statements"]) or "none",
-                               "items": [f"{st['id']} {st['title']}" for st in c["statements"]]}]
-                    + ([{"title": "Numbers", "summary": f"{ok} match, {len(bad)} stale",
-                         "items": [n["why"] for n in c["numbers"]]}] if c["numbers"] else [])}
-        rv = S["review"]
-        if rv.get("findings"):
-            sections.append({"title": "Review", "aside": review.headline(rv), "kind": "notes", "items": _notes(
-                [{"sign": "✦", "status": "removed" if f["kind"] == "contradiction" else "changed",
-                  "text": f["why"], "why": " / ".join(f"“{q}”" for q in f["quotes"][:2])} for f in rv["findings"]])})
-        model = {"nodes": nodes, "edges": [], "columns": [(f, f) for f in files]}
-        diagram = {"svg": _svg(model, "Paper", legend=False), "title": "The paper, section by section",
-                   "aside": "hover a section for its summary · click to open it", "lights": {}, "details": details,
-                   "enter": {}, "files": where, "pick": ""} if nodes else {}
-        return {"title": "Paper", "headline": f"{len(files)} paper file{'' if len(files) == 1 else 's'} · "
-                + (review.headline(rv) or "no review yet: ask Claude to review the paper"), "diagram": diagram,
-                "sections": sections or ([] if nodes else [{"title": "No paper yet", "aside": "", "kind": "lines",
-                                                            "items": [{"text": "research-diff reads the files the "
-                                                                       "`paper` globs of research-diff.toml name.",
-                                                                       "style": "muted"}]}])}
+        from . import paperdiagram
+        out = paperdiagram.view(S, part, int(getattr(ctx, "zoom", -1) if getattr(ctx, "zoom", None) is not None
+                                             else -1), lambda node: _part(S, node), lambda path: _summaries(S, path),
+                                LABEL["paper"], lambda model, title: _svg(model, title, legend=False))
+        at = out.pop("pdf", None)
+        if at and os.environ.get("RESEARCH_DIFF_PDF", "").lower() not in ("0", "off", "no"):
+            out["sections"] = list(out.get("sections") or []) + [_pdf_section(S, at)]
+        return out
     if view == "auto":
         c = autoresearch.campaign(S["root"])
         head = f"Auto-research {c['state']}: {c['goal']}" if c else "Auto-research is off"
@@ -629,6 +790,46 @@ def _web(ctx) -> dict:
                                   for n in model["nodes"]},
                         "files": {}, "pick": ""},
             "sections": sections}
+
+
+def _pdf_section(S: dict, at: dict) -> dict:
+    """The paper as a PDF, built with pdflatex in the background, turned to the page of the section shown."""
+    from urllib.parse import urlencode
+    from . import pdf
+    files = [x["path"] for x in S["map"].get("paper", [])]
+    st = pdf.ensure(S["root"], at["main"], files, done=lambda: _ping(S["root"]))
+    said = {"ready": "built with pdflatex · turned to this section", "building": "building with pdflatex…",
+            "failed": "pdflatex failed: the log is in the frame", "missing": "pdflatex is not installed here"}
+    q = urlencode({"main": at["main"], "file": at["file"], "line": at["line"], "v": st.get("stamp", "")[:8]})
+    return {"title": "The PDF", "aside": said.get(st.get("state"), ""), "kind": "frame",
+            "items": [{"src": "/x/research/pdf?" + q, "height": 900}]}
+
+
+def _summaries(S: dict, path: str) -> dict:
+    """Your LLM's summaries of a paper file's sections ({title: {"says", "claims", "watch"}}), when made."""
+    from . import paperview
+    try:
+        text = (Path(S["root"]) / path).read_text(encoding="utf-8")
+        got = paperview.summary(S["root"], paperview.blob_id(text.encode("utf-8"))) or {}
+    except (OSError, UnicodeDecodeError):
+        return {}
+    return got.get("sections") or {}
+
+
+def _where_from(S: dict) -> List[dict]:
+    """Where research-diff reads a study's statements from, for a study that has none yet (rather than a grey view)."""
+    bp = S["map"]
+    papers = [x["path"] for x in bp.get("paper", [])]
+    notes = sorted({f for n in bp["nodes"].values() for f in n.get("files", []) if f.endswith((".md", ".markdown"))})
+    return [{"sign": "·", "status": "same", "text": "Claims and findings are read from markers in the paper: "
+             "`% C1: what it claims`, with `% relies on: R1` (or supported by / contradicts) under it",
+             "why": ("its paper: " + ", ".join(papers[:4]) + (" …" if len(papers) > 4 else "")) if papers else
+             "no paper found in this study (LaTeX, or what the `paper` globs of research-diff.toml name)"},
+            {"sign": "·", "status": "same", "text": "Results and hypotheses from notes (`## R1: …` with `metrics:`) "
+             "and configs (a `research:` block)", "why": ("notes with markers: " + ", ".join(notes[:4])) if notes
+             else "no notes with markers yet"},
+            {"sign": "·", "status": "same", "text": "Or ask Claude: research-diff suggest proposes markers for a paper "
+             "that has none", "why": ""}]
 
 
 def _right_now(S: dict) -> List[dict]:
@@ -960,6 +1161,31 @@ def route(ctx, method: str, path: str, query: Dict[str, str], body: bytes) -> Tu
             return 404, html, b"<p>Only the research's own files open here.</p>"
         st = paperview.summarize(S["root"], f, S["map"], S["graph"])     # in the engine's process: a thread
         return 200, html, webparts.file_page(paperview.outline(S["root"], f, S["map"], S["graph"]), st).encode()
+    if method == "GET" and path in ("pdf", "pdf/file"):
+        from . import pdf as pdfmod
+        S = state(ctx)
+        main = (query.get("main") or query.get("path") or "").replace("\\", "/").lstrip("/")
+        for x in S.get("studies", []):          # the study whose paper it is
+            if main.startswith(x["path"].rstrip("/") + "/"):
+                S = state(dataclasses.replace(ctx, part=x["id"] + "@"))
+        files = [x["path"] for x in S["map"].get("paper", [])]
+        if ".." in main.split("/") or main not in files:
+            return 404, html, b"<p>Only the research's own paper builds here.</p>"
+        if path == "pdf/file":
+            try:
+                return 200, "application/pdf", pdfmod.pdf_path(S["root"], main).read_bytes()
+            except OSError:
+                return 404, html, b"<p>No PDF yet.</p>"
+        st = pdfmod.status(S["root"], main) or pdfmod.ensure(S["root"], main, files)
+        f = (query.get("file") or main).replace("\\", "/").lstrip("/")
+        try:
+            line = int(query.get("line") or 1)
+        except ValueError:
+            line = 1
+        page = pdfmod.page_of(S["root"], main, f, line) if st.get("state") == "ready" else 1
+        from urllib.parse import quote
+        src = f"pdf/file?main={quote(main)}&v={str(st.get('stamp', ''))[:8]}#page={page}&view=FitH"
+        return 200, html, pdfmod.page_html(src, st).encode()
     if method == "GET" and path == "auto":
         return 200, html, webparts.auto_page("/x/research/auto").encode()
     if method == "GET" and path == "auto/status":
@@ -998,11 +1224,30 @@ def applies(root) -> bool:
 
 
 def projects(ctx) -> List[dict]:
-    """The repository's studies as projects for system-diff's own list (where it asks: one list on the left, its pick
-    the study on every tab): [{"path", "title", "why"}]. None while the person reads the repository as one study."""
-    S = state(dataclasses.replace(ctx, part=""))
-    found = [] if S.get("split_off") else S.get("studies") or []
-    return [{"path": x["path"], "title": x["title"], "why": "a paper and its experiments of its own"} for x in found]
+    """The repository's studies as projects for system-diff's own list (one list on the left, its pick the study on
+    every tab): [{"path", "title", "why"}], "why" saying how far each study's reading is or what it holds. Cheap: the
+    studies are found from the file list; nothing is read here. None while the person reads the repository as one."""
+    from . import config, studies
+    src, ident, root = _source(ctx)
+    cfg = config.load(src, root)
+    found = _detect(src, ident, cfg, root)
+    if not found or not studies.split_on(root):
+        return []
+    return [{"path": x["path"], "title": x["title"], "why": progress_text(root, x["id"])} for x in found]
+
+
+def progress(ctx) -> str:
+    """How far the reading of the study a page shows is, in words ("reading files 40% · 160 of 400 files"), for
+    system-diff's page while that view is still being drawn; "" when there is nothing under way."""
+    from . import config, studies
+    src, ident, root = _source(ctx)
+    found = _detect(src, ident, config.load(src, root), root)
+    if not found:
+        return ""
+    sid = studies.split(ctx.part or "")[0]
+    sid = sid if sid in {x["id"] for x in found} else (studies.at(found, _scope(ctx)) or found[0]["id"])
+    said = progress_text(root, sid)
+    return "" if said.startswith(("ready", "no claims", "no paper")) else said
 
 
 MANIFESTS = ("pyproject.toml", "setup.py", "package.json", "go.mod", "Cargo.toml", "pom.xml", "build.gradle",

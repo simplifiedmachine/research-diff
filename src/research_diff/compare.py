@@ -22,6 +22,13 @@ WORKTREE = (".", "worktree")
 
 
 def _rev(root: Path, ref: str) -> Optional[str]:
+    """The commit a ref names, read from .git without starting git (a program start costs seconds on some machines);
+    git itself for what that reader does not cover."""
+    try:
+        from system_diff import gitfs
+        return gitfs.rev(root, ref)
+    except Exception:  # noqa: BLE001 - gitfs.Fallback, or an older system-diff: ask git
+        pass
     try:
         return git("rev-parse", "--verify", "-q", ref, cwd=root).strip() or None
     except subprocess.CalledProcessError:

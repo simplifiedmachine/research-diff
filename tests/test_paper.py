@@ -47,9 +47,10 @@ def test_every_number_the_paper_prints_is_checked_against_its_results(study):
     checks = {(c["from"], c["to"], c["sign"]) for c in bp["checks"]}
     assert ("E1.results", "tab:main", "+") in checks and ("E1.results", "C1", "+") in checks
     stale = [c["why"] for c in bp["checks"] if c["sign"] == "-"]
-    assert stale == ["C2 says 86.1% (paper/main.tex:22), but E1.results acc.b32 is 0.874"]
+    assert stale == ["C2 says 86.1% (paper/main.tex:22), but E1.results acc.b32 is 0.874, 87.4% at the digits "
+                     "printed"]
     assert [i["why"] for i in bp["issues"]] == [
-        "§Abstract:2 says 88.9% (paper/main.tex:2), but E1.results acc.b32 is 0.874"]
+        "§Abstract:2 says 88.9% (paper/main.tex:2), but E1.results acc.b32 is 0.874, 87.4% at the digits printed"]
     assert "paper/main.tex:16 refers to fig:missing, which the paper does not define" in bp["warnings"]
     assert [s["title"] for s in bp["paper"][0]["sections"]] == ["Abstract", "Results", "Conclusion"]
 
@@ -191,3 +192,25 @@ def test_an_engine_goes_when_its_repository_does(study, tmp_path):
     assert not w.gone()
     w.root = tmp_path / "deleted"          # its repository, gone (git's read-only objects make rmtree fail on Windows)
     assert w.gone()
+
+
+def test_a_number_is_stale_only_when_it_differs_at_the_digits_printed():
+    from research_diff import paper
+    num = paper.numbers("rho is 0.60 here", 1)[0]
+    assert paper.compare_number(num, [("R4", "rho", 0.595)], 0.05)[0] == "match"      # 0.595 prints as 0.60
+    assert paper.compare_number(num, [("R4", "rho", 0.59)], 0.05)[0] == "stale"       # 0.59 does not
+    nodes = {"R4": {"kind": "result", "metrics": {"rho": 0.59}}, "C1": {"kind": "claim", "metrics": {}}}
+    p = {"path": "p.tex", "floats": [], "paragraphs": [{"line": 3, "section": "R", "markers": ["C1"], "refs": [],
+                                                        "text": "rho is 0.60", "numbers": [num]}]}
+    checks, _issues = paper.check([p], nodes, [("R4", "supports", "C1")])
+    bad = [c for c in checks if c["sign"] == "-"]
+    assert bad[0]["last_digit"] and bad[0]["why"].endswith("is 0.59; only the last digit differs")
+
+
+def test_a_summary_cut_off_keeps_the_sections_that_came_whole():
+    from research_diff import paperview
+    chunks = [{"title": "Intro"}, {"title": "Method"}, {"title": "Results"}]
+    answer = ('{"file": "A paper.", "sections": {"Intro": {"says": "Why.", "claims": "", "watch": ""}, '
+              '"Method": {"says": "How.", "claims": "C1", "watch": ""}, "Results": {"says": "What we fo')
+    got = paperview.parse(answer, chunks, "claude")
+    assert got is not None and set(got["sections"]) == {"Intro", "Method"}

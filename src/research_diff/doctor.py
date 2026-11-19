@@ -49,6 +49,7 @@ def report(root: Path, config_path: str = "") -> List[str]:
     from . import evidence
     g = evidence.build(bp, cfg)
     out.append(f"  evidence: {g['headline']}")
+    out += studies_report(root, cfg)
     found = next((n for n in (config.FILE, "pyproject.toml") if (root / n).is_file()), "")
     out.append(f"  config: {config_path or found or 'defaults (no research-diff.toml)'}")
     home = Path.home() / ".claude"
@@ -106,6 +107,50 @@ def report(root: Path, config_path: str = "") -> List[str]:
     for w in bp["warnings"][:5]:
         out.append(f"  warning: {w}")
     out.append(f"python: {sys.executable}")
+    return out
+
+
+def studies_report(root: Path, cfg: dict) -> List[str]:
+    """How long a program start takes here (git: research-diff avoids them, but some steps still start one), and, in
+    a repository of several studies, the time of each step of reading each study."""
+    from . import compare, evidence, review, scan, studies
+    from .extract import extract
+    out = []
+    t = time.time()
+    subprocess.run(["git", "--version"], capture_output=True)
+    took = time.time() - t
+    out.append(f"{'✓' if took < 0.3 else '!'} starting a program (git) takes {took:.2f}s here"
+               + ("" if took < 0.3 else ": security software that scans each program start makes every step that "
+                                         "starts one slow"))
+    src = compare.WorkSource(root)          # the submodules' files too (git ls-files --recurse-submodules)
+    found = studies.detect(src.files, cfg)
+    if not found:
+        return out
+    sha, label = compare.resolve(root, "checkpoint")
+    out.append(f"  studies: {len(found)}, each read on its own (the checkpoint: {label})")
+    for x in found:
+        sc = studies.scope(found, x["id"])
+        mine = [f for f in src.files if studies.of_study(f, sc[0])]
+        known = scan._known(root)
+        skipped = sum(1 for f in mine if known.get(scan.key(src, root, f) or "") is False)
+        t = time.time()
+        after = extract(src, cfg, sc)
+        a = time.time() - t
+        t = time.time()
+        before = extract(compare.CommitTree(sha, root), cfg, sc)
+        b = time.time() - t
+        t = time.time()
+        g = evidence.build(after, cfg)
+        e = time.time() - t
+        t = time.time()
+        review.current(root)
+        r = time.time() - t
+        papers = len(after.get("paper", []))
+        out.append(f"  {x['title']}: {len(mine)} files, {papers} paper file{'' if papers == 1 else 's'}"
+                   f"{' (none: is its paper a submodule that is not checked out?)' if not papers else ''} "
+                   f"({skipped} known to hold no research) · read {a:.2f}s · "
+                   f"checkpoint {b:.2f}s · evidence {e:.2f}s · review {r:.2f}s · {len(g['statements'])} statements, "
+                   f"{len(before['nodes'])} nodes at the checkpoint")
     return out
 
 

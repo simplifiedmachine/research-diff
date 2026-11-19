@@ -104,6 +104,32 @@ def _cache_name(sid: str) -> str:
     return f"commits-{re.sub(r'[^A-Za-z0-9_.-]+', '_', sid)}.json" if sid else "commits.json"
 
 
+_LOGS: dict = {}
+
+
+def _log(root: Path, n: int, spec: tuple) -> List[str]:
+    """`git log` of the last n commits (of some paths), asked once per HEAD: a program start costs seconds on some
+    machines, and the same HEAD has the same history."""
+    try:
+        from system_diff import gitfs
+        head = gitfs.head(root)
+    except Exception:  # noqa: BLE001
+        head = None
+    key = (str(root), head, n, spec)
+    if head is not None and key in _LOGS:
+        return _LOGS[key]
+    try:
+        log = git("log", f"-{n}", "--format=%H%x09%ct%x09%s", *spec, cwd=root).strip().splitlines()
+    except Exception:  # noqa: BLE001 - no commits yet, or git cannot say
+        log = []
+    log = [ln for ln in log if ln.count("\t") >= 2]
+    if head is not None:
+        _LOGS[key] = log
+        while len(_LOGS) > 64:
+            _LOGS.pop(next(iter(_LOGS)))
+    return log
+
+
 def commits_of(root: Path, scope: Optional[tuple] = None, sid: str = "", n: int = RECENT,
                read: bool = False) -> Tuple[List[dict], int]:
     """One study's history from git (the whole repository's without one): its last `n` commits that changed the
@@ -116,11 +142,7 @@ def commits_of(root: Path, scope: Optional[tuple] = None, sid: str = "", n: int 
     if scope:                          # its folder, and its own folder inside a shared one (results/<study>/...)
         mine = scope[0].strip("/")
         spec = ["--", f"{mine}/", f":(glob)*/{mine}/**"]
-    try:
-        log = git("log", f"-{n}", "--format=%H%x09%ct%x09%s", *spec, cwd=root).strip().splitlines()
-    except Exception:  # noqa: BLE001 - no commits yet, or git cannot say
-        log = []
-    log = [ln for ln in log if ln.count("\t") >= 2]
+    log = _log(root, n, tuple(spec))
     todo = [ln for ln in log if ln.split("\t", 1)[0] not in cache]
     if read and todo:
         memo: dict = {}

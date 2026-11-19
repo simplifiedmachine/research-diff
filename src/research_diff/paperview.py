@@ -108,6 +108,22 @@ def _norm(title: str) -> str:
 WHY: Dict[str, str] = {}
 
 
+def _salvage(text: str) -> Optional[dict]:
+    """A JSON answer cut off part way (a long paper's summary hits the answer's length): the longest beginning of it
+    that, closed, is JSON, so the sections that came whole are kept."""
+    ends = [i for i, ch in enumerate(text) if ch == "}"]
+    for i in reversed(ends[-400:]):
+        head = text[:i + 1]
+        for close in ("}", "}}", "]}", "}]}", ""):
+            try:
+                got = json.loads(head + close)
+            except ValueError:
+                continue
+            if isinstance(got, dict) and got.get("sections"):
+                return got
+    return None
+
+
 def parse(answer: str, chunks: List[dict], by: str) -> Optional[dict]:
     """The summary in the answer, its sections matched to the file's (titles compared loosely: case, punctuation,
     LaTeX); None, with the reason in WHY["last"], when it has none."""
@@ -118,8 +134,10 @@ def parse(answer: str, chunks: List[dict], by: str) -> Optional[dict]:
     try:
         data = json.loads(m.group(0))
     except ValueError as exc:
-        WHY["last"] = f"its answer was not valid JSON ({str(exc)[:80]}); it may have been cut off"
-        return None
+        data = _salvage(answer[m.start():])           # cut off: keep the sections that came whole
+        if data is None:
+            WHY["last"] = f"its answer was not valid JSON ({str(exc)[:80]}); it may have been cut off"
+            return None
     by_norm = {_norm(c["title"]): c["title"] for c in chunks}
     given = data.get("sections") or {}
     if isinstance(given, list):         # [{"title": ..., "says": ...}] instead of {title: {...}}
