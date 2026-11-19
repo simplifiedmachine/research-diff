@@ -122,6 +122,20 @@ def studies_report(root: Path, cfg: dict) -> List[str]:
     out.append(f"{'✓' if took < 0.3 else '!'} starting a program (git) takes {took:.2f}s here"
                + ("" if took < 0.3 else ": security software that scans each program start makes every step that "
                                          "starts one slow"))
+    if (root / ".gitmodules").is_file():
+        from . import system_diff_ext as ext
+        got = ext._submodule_index(root)
+        if got is not None:
+            out.append(f"✓ submodules: {len(got)} files read from their own indexes")
+        else:
+            out.append(f"✗ submodules: their files could not be read without git: {ext.SUB_WHY.get(str(root), '?')}")
+            try:
+                n = len([f for f in subprocess.run(["git", "ls-files", "-z", "-c", "--recurse-submodules"], cwd=root,
+                                                   capture_output=True, text=True, check=True).stdout.split("\0")
+                         if f])
+                out.append(f"  git lists {n} files with them")
+            except subprocess.CalledProcessError as exc:
+                out.append(f"✗ git cannot list them either: {(exc.stderr or '').strip()[:300]}")
     src = compare.WorkSource(root)          # the submodules' files too (git ls-files --recurse-submodules)
     found = studies.detect(src.files, cfg)
     if not found:

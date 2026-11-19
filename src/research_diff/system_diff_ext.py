@@ -145,12 +145,16 @@ def _submodule_files(root: Path, src, ident) -> List[str]:
         from system_diff.sources import git
         try:
             listed = git("ls-files", "-z", "-c", "--recurse-submodules", cwd=root).split("\0")
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - e.g. git's "dubious ownership" of a submodule's folder
+            SUB_WHY[str(root)] = SUB_WHY.get(str(root), "") + f"; git ls-files failed: {str(exc)[:200]}"
             listed = []
     known = set(src.files)
     extra = [f for f in listed if f and f not in known]
     _SUBS[key] = (ident, time.time(), extra)
     return extra
+
+
+SUB_WHY: Dict[str, str] = {}      # why the submodules' files could not be read without git, for the doctor
 
 
 def _submodule_index(root: Path) -> Optional[List[str]]:
@@ -160,7 +164,8 @@ def _submodule_index(root: Path) -> Optional[List[str]]:
     try:
         from system_diff import gitfs
         text = (root / ".gitmodules").read_text(encoding="utf-8", errors="replace")
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        SUB_WHY[str(root)] = f".gitmodules: {type(exc).__name__}: {exc}"
         return None
     out: List[str] = []
     for path in _re.findall(r"^\s*path\s*=\s*(.+?)\s*$", text, _re.M):
@@ -175,9 +180,11 @@ def _submodule_index(root: Path) -> Optional[List[str]]:
             elif dot.is_dir():
                 gdir = dot
             else:
+                SUB_WHY[str(root)] = f"{path}: not checked out (no .git in it)"
                 continue                       # not checked out
             entries, _unmerged = gitfs.read_index(gdir / "index")
-        except Exception:  # noqa: BLE001 - a split index, a new format: git lists them
+        except Exception as exc:  # noqa: BLE001 - a split index, a new format: git lists them
+            SUB_WHY[str(root)] = f"{path}: its index could not be read ({type(exc).__name__}: {exc})"
             return None
         out += [f"{path}/{f}" for f, e in entries.items() if e.mode != "160000"]
     return out
@@ -1297,18 +1304,25 @@ def _state_for_file(ctx, path: str) -> dict:
 def outline(ctx, path: str, text: str) -> dict:
     """system-diff's file viewer, for a paper or notes file: its sections (and the statements in each) as the
     outline, and the LLM's summary of each section (made in the engine's process the first time, kept by version)."""
-    from . import paperview
+    from . import paperdiagram, paperview
+    from .history import touched as touched_ids
     S = _state_for_file(ctx, path)
     o = paperview.outline(S["root"], path, S["map"], S["graph"])
+    touched = set(touched_ids(S["cmp"].diff)) if S.get("cmp") else set()
+    top = min((c["level"] for c in o["chunks"]), default=1)
     chunks = []
     for c in o["chunks"]:
-        chunks.append({"line": c["line"], "end": c["end"], "depth": max(0, c["level"] - 1), "qual": c["title"],
-                       "name": "§ " + c["title"], "kind": "section"})
+        x = paperdiagram._stats(S, lambda f, ln, c=c: f == path and c["line"] <= ln <= c["end"], touched)
+        said = " · ".join(paperdiagram._chips(x)).replace("claims ", "").replace("numbers", "nums")
+        chunks.append({"line": c["line"], "end": c["end"], "depth": max(0, c["level"] - top), "qual": c["title"],
+                       "name": "§ " + c["title"], "kind": said or "section", "status": x["status"],
+                       "tip": "\n".join(cc["why"] for cc in x["stale"][:4])})
         for st in c["statements"]:
             ln = int(st.get("line") or c["line"])
-            chunks.append({"line": ln, "end": _span(S["root"], path, ln), "depth": c["level"],
+            chunks.append({"line": ln, "end": _span(S["root"], path, ln), "depth": c["level"] - top + 1,
                            "qual": f"{c['title']} / {st['id']}", "name": f"{st['id']} {st['title'][:60]}",
-                           "kind": st.get("verdict") or st["kind"]})
+                           "kind": st.get("verdict") or st["kind"],
+                           "status": STATUS.get(st.get("verdict") or "", "same")})
     got = paperview.summarize(S["root"], path, S["map"], S["graph"])
     if got["state"] == "done":
         summary = {"state": "done", "file": got.get("file", ""), "by": got.get("by", ""),

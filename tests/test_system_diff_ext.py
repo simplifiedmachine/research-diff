@@ -495,3 +495,19 @@ def test_the_pdf_builder_is_found_where_tex_installs_it(monkeypatch, tmp_path):
     monkeypatch.setenv("RESEARCH_DIFF_PDFLATEX", "")
     monkeypatch.setattr("glob.glob", lambda pattern: [str(exe)] if "MiKTeX" in pattern else [])
     assert pdf.find() == (str(exe), "pdflatex")                                  # where MiKTeX puts it
+
+
+def test_the_paper_and_its_appendix_are_columns_of_their_own(repo, files):
+    tex = ["\\documentclass{article}", "\\begin{document}"]
+    for i in range(10):
+        tex += [f"\\section{{Main {i}}}", "", "text", ""]
+    tex += ["\\appendix", ""]
+    for i in range(3):
+        tex += [f"\\section{{Extra {i}}}", "", "text", ""]
+    files(repo, {"paper/main.tex": "\n".join(tex + ["\\end{document}"])})
+    from research_diff import paperdiagram
+    lay = paperdiagram.layout(repo, ["paper/main.tex"])
+    assert [b.appendix for b in lay["boxes"] if b.title != "Front matter"] == [False] * 10 + [True] * 3
+    page = x.web(extensions.Context(repo, "paper", "", 140, 2, None))
+    svg = page["diagram"]["svg"]
+    assert "PAPER (2)" in svg.upper() and "APPENDIX" in svg.upper()             # 8 a column, then the next

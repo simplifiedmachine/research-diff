@@ -20,6 +20,8 @@ from typing import Dict, List, Optional, Tuple
 from . import paper
 
 INPUT_RX = re.compile(r"\\(?:input|include|subfile)\s*\{([^}]+)\}")
+APPENDIX_RX = re.compile(r"\\appendix\b|\\begin\{appendices\}")
+PER_COLUMN = 8             # boxes in one column before the next
 AUTO_OUTLINE = 25          # headings: more than this opens at outline
 LISTED = 6                 # parts listed inside a box at the detailed zoom
 DETAILED, COMPACT, OUTLINE = 0, 1, 2
@@ -55,6 +57,7 @@ class Box:
         self.parts: List[dict] = []          # the headings inside: {"title", "level", "file", "line"}
         self.tables: List[str] = []          # files it \input's that hold no sections
         self.end = line
+        self.appendix = False
 
     def holds(self, f: str, line: int) -> bool:
         return f in self.tables or any(f == rf and lo <= line <= hi for rf, lo, hi in self.ranges)
@@ -88,8 +91,13 @@ def layout(root: Path, files: List[str]) -> dict:
         out, pos = [], 1
         n = len(texts[f].splitlines())
         evs = sorted([(s["line"], 1, "head", s) for s in parsed[f]["sections"]] +
-                     [(ln, 0, "input", t) for ln, t in inputs.get(f, [])], key=lambda e: (e[0], e[1]))
+                     [(ln, 0, "input", t) for ln, t in inputs.get(f, [])] +
+                     [(i, 0, "appendix", None) for i, ln in enumerate(texts[f].splitlines(), 1)
+                      if APPENDIX_RX.search(paper.COMMENT_RX.sub("", ln))], key=lambda e: (e[0], e[1]))
         for line, _o, kind, what in evs:
+            if kind == "appendix":
+                out.append(("appendix",))
+                continue
             if kind == "head":
                 if line - 1 >= pos:
                     out.append(("text", f, pos, line - 1))
@@ -113,9 +121,14 @@ def layout(root: Path, files: List[str]) -> dict:
         headings += len(levels)
         top = min(levels) if levels else 1
         cur: Optional[Box] = None
+        appendix = False
         for e in evs:
+            if e[0] == "appendix":
+                appendix = True
+                continue
             if e[0] == "head" and e[3] <= top:
                 cur = Box(f"sec:{e[1]}:{e[2]}", e[4] or "(untitled)", e[1], e[2])
+                cur.appendix = appendix
                 boxes.append(cur)
                 continue
             if cur is None:                   # before the first section: the preamble, the title, the abstract
@@ -234,8 +247,12 @@ def view(S: dict, part: str, zoom: int, part_of, summary_of, label: str, svg) ->
                              (f" · +{len(b.parts) - LISTED}" if len(b.parts) > LISTED else ""), "status": "same"})
         sub = " · ".join(s for s in (f"{len(b.parts)} part{'' if len(b.parts) == 1 else 's'}" if b.parts else "",
                                      f"{len(b.tables)} table file{'' if len(b.tables) == 1 else 's'}"
-                                     if b.tables else "") if s) or posixpath.basename(b.file)
-        nodes.append({"id": b.id, "col": b.file, "title": "§ " + b.title[:80], "sub": sub, "status": x["status"],
+                                     if b.tables else "") if s) or f"lines {b.line}-{b.end}"
+        base = ("Appendix" if b.appendix else "Paper") + ("" if len(lay["docs"]) == 1 else
+                                                          f" · {posixpath.basename(b.file)}")
+        n_in = sum(1 for n in nodes if n["col"].startswith(base))
+        col = base if n_in < PER_COLUMN else f"{base} ({n_in // PER_COLUMN + 1})"
+        nodes.append({"id": b.id, "col": col, "title": "§ " + b.title[:80], "sub": sub, "status": x["status"],
                       "type": "component", "lines": lines})
         if b.parts or b.tables:
             enter["b:" + b.id] = {"view": "paper", "part": part_of("sec:" + b.id)}
@@ -268,8 +285,7 @@ def view(S: dict, part: str, zoom: int, part_of, summary_of, label: str, svg) ->
                               "inside": "Click to list them"}
         attention.append(("other", "Other files", x, ""))
     cols = list(dict.fromkeys(n["col"] for n in nodes))
-    model = {"nodes": nodes, "edges": [], "columns": [(c, posixpath.basename(c) if c != "Other files" else c)
-                                                       for c in cols]}
+    model = {"nodes": nodes, "edges": [], "columns": [(c, c) for c in cols]}
     need = _attention(attention)
     sections = [{"title": "Needs attention", "aside": "worst first · hover one to see its section",
                  "kind": "notes", "items": need}] if need else []
