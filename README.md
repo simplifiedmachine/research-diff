@@ -57,6 +57,29 @@ research-diff outline paper/main.tex --summarize   # the paper section by sectio
 research-diff review                               # where the paper contradicts itself or its results
 ```
 
+## Read: the paper, and what stands behind every line
+
+When agents write the experiments and the paper, the person still drives the research, and that takes knowing what
+each sentence rests on. The **Read** tab shows the paper as text (through every `\input`, the appendix included), with
+everything it can trace marked: claims (✓ ◐ ✗), numbers, figures, tables, citations and `\ref`s.
+
+- **Hover** anything marked: its line lights up and a card says what it is, whether it holds, and where it comes from.
+- **Click** it for the whole chain behind it, each step a click from its source lines:
+  a number → the result it prints → the experiment → the script that makes it; a figure or table → its file → the
+  script that writes it; a citation → its `.bib` entry; a claim → what supports and what contradicts it; and who
+  changed it, when. A trail takes you back.
+- **What changed since the checkpoint** is marked in the margin; **Needs attention** and **Changed since checkpoint**
+  keep only those, and `j` / `k` go from one to the next. The contents give each section's state.
+- **Say what you think**, from any item: **Ask Claude** (sent to Claude's session with the chain), **Tell the agents**
+  (on the agents' bus, read before their next step), **Rerun** (asks Claude to rerun the experiment behind it and
+  update what rests on it), **Mark as seen** (the checkpoint). None of these is a gate: the work goes on either way.
+- **The PDF**, from each section (**PDF ›**), at that section's page: built with `pdflatex` in the background whenever a
+  paper file changes (kept in .git, never in your folders); it looks on the PATH and where MiKTeX, TeX Live and MacTeX
+  install it, else uses tectonic; `RESEARCH_DIFF_PDFLATEX` names it exactly, `RESEARCH_DIFF_PDF=off` turns it off.
+
+A number is stale only if it differs at the digits printed (0.595 printed as 0.60 is not). Agents see the same
+picture through the MCP tools `needs_attention`, `read_item` and `what_changed_in_paper`.
+
 ## The evidence graph
 
 Left to right: **evidence** (results, tracker runs, an experiment's numbers, optionally citations), **hypotheses**,
@@ -156,8 +179,8 @@ system-diff app --open     # or research-diff app --open
 ```
 
 Open the address it prints (http://localhost:8765/). A research repository opens on research-diff's tabs, all about
-the research: **Now** (what changed since your checkpoint), **Evidence**, **Paper** (the paper section by section; a click opens it in the viewer, outlined by sections
-with your LLM's summary of each), **Review** (what to fix, worst first), **Agents** (the research team and its
+the research: **Read** (the paper, every claim, number, figure and citation a click from what stands behind it), **Now**
+(what changed since your checkpoint), **Evidence**, **Review** (what to fix, worst first), **Agents** (the research team and its
 workflow), **Auto-research** and **History**. system-diff's own tabs, about the software, wait behind **System ▸**. In
 Evidence and Review, a click on a claim, a finding or a result in the notes opens its file at that paragraph. The page follows the files as they change, yours and Claude's. To mark what you have
 seen, tell Claude "mark it as seen" (or run `research-diff checkpoint`): the next diff starts there.
@@ -213,16 +236,16 @@ diagrams. Its tabs are research's own, even where they share a name with system-
 
 | Tab | Key | What |
 |---|---|---|
+| Read | `p` | the paper as text, its claims, numbers, figures, tables and citations marked: hover for what each is, click for the chain behind it (number → result → experiment → script, figure or table → script, citation → .bib), what changed since the checkpoint, Ask Claude, Tell the agents, Rerun, and each section in the PDF (see [Read](#read-the-paper-and-what-stands-behind-every-line)) |
 | Now | `s` | what changed in the research since your checkpoint, on the research map, what Claude is on, and what is worth a look |
 | Evidence | `e` | the evidence graph as system-diff's diagram (green supports, red contradicts; hover a box for what supports and contradicts it, what to do about it and where it is; Enter or a click zooms into its evidence chain), the statements worst first |
-| Paper | `p` | the paper by its top-level sections, at any length: each a box whose colour is its worst (a stale number or a contradicted claim is red), with chips for its claims (✓ ◐ ✗), numbers (✓ ✗) and the tables it `\input`s; its subsections fold inside and show when you click it (each part and table then opens its file). Outline, compact and detailed follow the page's zoom; a long paper opens at outline. **Needs attention** comes first: the sections with stale numbers or contested claims, worst first. A number is stale only if it differs at the digits printed (0.595 printed as 0.60 is not), and a finding says when only the last digit differs. Below it, **the PDF**: built with `pdflatex` in the background whenever a paper file changes (kept in .git, never in your folders) and turned to the page of the section you opened; it looks on the PATH and where MiKTeX, TeX Live and MacTeX install it, else uses tectonic; `RESEARCH_DIFF_PDFLATEX` names it exactly, `RESEARCH_DIFF_PDF=off` turns the PDF off |
 | Review | `v` | what to fix before trusting the paper, worst first: the paper contradicting itself, numbers out of date, claims whose support no longer holds, agents contradicting each other, claims nothing backs; Claude's review of the paper; exactly what changed since your checkpoint |
 | Agents | `g` | the research team: who owns which claims, experiments and sections (lit on the evidence diagram), the workflow (auto-research's runs on it too, and ready-made research workflows to start from), what the agents told each other, the agents worth keeping |
 | Auto-research | `u` | servers, the campaign, its iterations and their logs |
 | History | `y` | how the research got here: each commit of the study's files (and each turn), newest first, and what it did to the claims |
 
 Where research is the repository's main work (a research-diff.toml at its root, or a LaTeX paper and no software
-project at the root), system-diff opens it on Now and folds its own tabs, the software system's, behind **System ▸**.
+project at the root), system-diff opens it on Read and folds its own tabs, the software system's, behind **System ▸**.
 `home = "system"` (or `"research"`) in research-diff.toml says it for good. With a system-diff older than 0.11, which
 cannot fold its tabs, research-diff's sit after system-diff's and are named Research, Problems, Team and Timeline
 instead, so that no two tabs share a name.
@@ -255,7 +278,7 @@ says where its tabs are), and what auto-research asks of Claude goes through sys
 
 ## In Claude Code (with the plugins)
 
-- **The pane**: `n` Now · `r` Review · `e` Evidence · `p` Paper · `u` Auto-research · `a` Agents · `h` History. Arrows pick a claim (its
+- **The pane**: `p` Read · `n` Now · `r` Review · `e` Evidence · `u` Auto-research · `a` Agents · `h` History. Arrows pick a claim (its
   evidence lights up), Enter zooms into its evidence chain, `b` goes back, `f` follows Claude. `/research-diff tui`
   opens the same in a terminal of its own, and `research-diff watch` in a browser. With system-diff's plugin there too,
   the two panes take turns beside the chat: opening one closes the other, and a new session opens on the one you
@@ -264,9 +287,8 @@ says where its tabs are), and what auto-research asks of Claude goes through sys
     you last looked, ranked by consequence (the paper contradicting itself first) and each with why it matters.
   - **Review**: everything since your checkpoint, exactly, with a picture of only what changed.
   - **Evidence**: every statement by paper section with what supports it and what contradicts it.
-  - **Paper**: the paper section by section, each with its statements, tables and figures, its numbers checked, your
-    LLM's summary and the review's findings. In the browser, a file opens as its outline beside its text, the stale
-    numbers' lines in red.
+  - **Read**: the paper, its sections' state and what needs attention; in the browser, every marked item opens the
+    chain behind it.
   - **Agents**: the team, what each agent owns, its verdicts, where it contradicts another agent, and the bus.
   - **History**: how the research got here: *"You asked: run the LR ablation → it got: R2, H1 supported → contested,
     1 new contradiction (C2 contradicts C1)"*, for the whole study or one claim.
@@ -274,7 +296,8 @@ says where its tabs are), and what auto-research asks of Claude goes through sys
   of the turn. The status line keeps the count of contradictions in view.
 - **Ask Claude** "does C3 still hold?" or "what contradicts the paper?": it answers from the MCP tools
   (`research_evidence`, `explain`, `paper_outline`, `review_paper`, `research_diff`, `research_map`), with the
-  picture. Asked from the web page's box, the answer shows on the page, and what Claude names (`point_to`) lights up
+  picture. `needs_attention`, `read_item` (an item's chain, by the id the Read tab and `needs_attention` give) and
+  `what_changed_in_paper` give Claude and every agent the picture you read in the Read tab. Asked from the web page's box, the answer shows on the page, and what Claude names (`point_to`) lights up
   in its evidence graph; findings it keeps (`note`) stay on the node's card.
 - **One address for every project**: each web page joins system-diff's registry of running pages, on the first free
   port from 8765, so with both tools running every page has a tab per project and per tool, and the first one lists

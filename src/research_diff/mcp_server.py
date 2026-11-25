@@ -2,8 +2,9 @@
 
 research_map, research_diff, research_evidence and explain read; log_result writes a result marker into the research
 log (a Markdown file in the repository, so it is on the map, in git, and in the next diff); checkpoint marks what the
-person has understood. For teams of agents: plan_agents, claim, publish and inbox (agents.py). objectives lists, adds
-and clears what the person optimises the study for."""
+person has understood. read_item, needs_attention and what_changed_in_paper give agents the Read tab's picture of the
+paper, the one the person reads. For teams of agents: plan_agents, claim, publish and inbox (agents.py). objectives
+lists, adds and clears what the person optimises the study for."""
 from __future__ import annotations
 
 import re
@@ -31,7 +32,9 @@ INSTRUCTIONS = (
     "contradicts a statement. Record an experiment's outcome with log_result. For work across the study, plan_agents "
     "splits it into agents; each agent claims its nodes, publishes what it changes and reads its inbox. "
     "paper_outline shows the paper section by section with every number checked against the results, and "
-    "review_paper where the paper contradicts itself: keep experiments, results and claims hand in hand. When "
+    "review_paper where the paper contradicts itself: keep experiments, results and claims hand in hand. "
+    "needs_attention, read_item and what_changed_in_paper give the picture the person reads in the Read tab: name "
+    "the same ids. When "
     "explaining, point_to the nodes you name. When auto-research is on, autoresearch_status says what is asked of "
     "you: analyse each iteration and autoresearch_submit the next. Call checkpoint only when the person says they have understood the "
     "current state."
@@ -120,6 +123,117 @@ def tool_log(root: Path, experiment: str, metrics: Dict[str, float], title: str 
     with open(path, "w", encoding="utf-8", newline="\n") as f:
         f.write(before.rstrip("\n") + "\n\n" + "\n".join(lines) + "\n")
     return {"recorded": rid, "in": log}
+
+
+# ── the Read tab's picture, for agents: the same state, the same items, the same chains ────────────────────────────
+
+def _reading(root: Path, study: str = ""):
+    """(state, the Read tab's model) of one study (empty: the one the Read tab shows first), as the extension reads
+    them: the person and the agents see the same items with the same ids."""
+    import types
+
+    from . import studies
+    from . import system_diff_ext as ext
+    S = ext.state(types.SimpleNamespace(root=root, part=studies.join(study, ""), live=None, scope=""))
+    return S, ext.reading(S)
+
+
+def _where(x: dict) -> str:
+    return f"{x['file']}:{x['line']}" if x.get("file") else ""
+
+
+def _para_text(blk: dict) -> str:
+    """A paragraph's readable text, its items as the page shows them: [cite], ref, $math$."""
+    out = []
+    for t in blk.get("tokens", []):
+        out.append({"cite": "[{}]", "ref": "ref {}", "math": "${}$"}.get(t["t"], "{}").format(t["s"]))
+    return " ".join(x.strip() for x in out if x.strip())
+
+
+def tool_read_item(root: Path, iid: str, study: str = "") -> Dict[str, Any]:
+    from . import reader
+    S, m = _reading(root, study)
+    if iid not in m.items and iid not in S["map"]["nodes"] and iid not in S["graph"]["nodes"]:
+        f, _, ln = iid.rpartition(":")      # a place in the paper: the items printed there
+        here = [k for k, it in m.items.items() if f and it.get("file") == f and str(it.get("line")) == ln]
+        if here:
+            return {"id": iid, "items here": here, "text": f"{iid} prints " + ", ".join(here)
+                    + ": read_item one of them."}
+    prov = getattr(m, "prov", None) or reader.Provenance(S)
+    m.prov = prov
+    c = reader.chain(S, m, iid, prov)
+    lines = [f"{c['title']}" + (f" [{c['kind']}]" if c["kind"] else "") + (f" · {c['state']}" if c["state"] else "")]
+    if c.get("summary"):
+        lines.append(c["summary"])
+    for i, st in enumerate(c["steps"], 1):
+        lines.append(f"{i}. {st['title']}" + (f" — {st['detail']}" if st.get("detail") else "")
+                     + (f" ({_where(st)})" if _where(st) else "") + (f" → read_item {st['item']}" if st.get("item")
+                                                                    else ""))
+    for h in c.get("history", [])[:6]:
+        lines.append(f"history: {h.get('who') or '?'}: {h.get('what') or ''}" + (f" → {h['got']}" if h.get("got")
+                                                                               else ""))
+    return {"id": iid, "title": c["title"], "kind": c["kind"], "state": c["state"], "text": "\n".join(lines),
+            "steps": [{k: v for k, v in st.items() if v} for st in c["steps"]]}
+
+
+def _blocks(m) -> List[tuple]:
+    return [(sec, b) for sec in m.sections for b in sec["blocks"]]
+
+
+def tool_needs_attention(root: Path, study: str = "") -> Dict[str, Any]:
+    S, m = _reading(root, study)
+    bp, g = S["map"], S["graph"]
+    out: List[Dict[str, Any]] = []
+    for sec, b in _blocks(m):                 # numbers the paper prints that its results no longer say
+        for t in b.get("tokens", []):
+            if t.get("state") == "stale":
+                it = m.items[t["id"]]
+                c = it.get("check") or {}
+                out.append({"why": "stale number", "id": t["id"], "where": _where(it), "section": sec["title"],
+                            "says": t["s"], "detail": str(c.get("why", ""))})
+        if b["kind"] == "float" and b.get("stale"):
+            out.append({"why": "stale number", "id": b["id"], "where": _where(b), "section": sec["title"],
+                        "says": f"{b['stale']} stale in {b['float']} {b.get('label') or b['caption']}",
+                        "detail": "read_item it for each number"})
+    for verdict in ("contradicted", "contested"):
+        for st in g["statements"]:
+            if st["verdict"] != verdict:
+                continue
+            it = m.items.get(st["id"]) or {}
+            n = bp["nodes"].get(st["id"]) or {}
+            where = _where(it) or (f"{n['files'][0]}:{n.get('line') or 1}" if n.get("files") else "")
+            out.append({"why": f"{verdict} claim", "id": st["id"], "where": where, "section": st.get("section", ""),
+                        "says": st["title"], "detail": "; ".join(x["why"] for x in st["against"][:3])})
+    for sec, b in _blocks(m):
+        if b.get("changed"):
+            ids = [c["id"] for c in b.get("claims", [])] + [t["id"] for t in b.get("tokens", []) if t.get("id")]
+            out.append({"why": "changed since the checkpoint", "id": b.get("id") or (ids[0] if ids else _where(b)),
+                        "where": _where(b), "section": sec["title"],
+                        "says": (_para_text(b) if b["kind"] == "para" else b.get("caption", ""))[:200]})
+    counts: Dict[str, int] = {}
+    for x in out:
+        counts[x["why"]] = counts.get(x["why"], 0) + 1
+    return {"study": S.get("study", ""), "checkpoint": m.data()["base"], "counts": counts, "items": out,
+            "text": "\n".join(f"{x['why']}: {x['id']} ({x['where']}) {x['says']}" for x in out)
+            or "Nothing in the paper needs attention."}
+
+
+def tool_what_changed_in_paper(root: Path, study: str = "") -> Dict[str, Any]:
+    S, m = _reading(root, study)
+    out = []
+    for sec, b in _blocks(m):
+        if not b.get("changed"):
+            continue
+        text = _para_text(b) if b["kind"] == "para" else f"{b['float'].title()} {b.get('label') or ''}: " \
+            f"{b.get('caption', '')}"
+        out.append({"where": f"{b['file']}:{b['line']}" + (f"-{b['end']}" if b.get("end", b["line"]) != b["line"]
+                                                            else ""),
+                    "section": sec["title"], "text": text,
+                    "items": [c["id"] for c in b.get("claims", [])] + ([b["id"]] if b.get("id") else [])})
+    base = m.data()["base"]
+    return {"study": S.get("study", ""), "since": base, "paragraphs": out,
+            "text": "\n\n".join(f"{x['where']} ({x['section']}): {x['text']}" for x in out)
+            or f"No paragraph of the paper changed since {base or 'the checkpoint'}."}
 
 
 class _Named:
@@ -247,6 +361,29 @@ def register(target, prefix: str = ""):
         for c in o["chunks"]:
             c.pop("text", None)
         return o
+
+
+    @_read_only(server)
+    def read_item(id: str, study: str = "") -> Dict[str, Any]:
+        """One item of the paper as the person sees it in the Read tab: a claim or finding (C1), a number the paper
+        prints (num:... ids, from needs_attention), a figure or table (fig:/tab:<label>), a citation (cite:<key>), a
+        reference (ref:<label>), or a place (paper/main.tex:42). What it is, its state, and the chain behind it step by
+        step with file:line (number → result → experiment → script; claim → what supports and contradicts it), and its
+        history. Use it before explaining or changing an item, and name the same ids to the person."""
+        return tool_read_item(repo_root(), id, study)
+
+    @_read_only(server)
+    def needs_attention(study: str = "") -> Dict[str, Any]:
+        """The paper's items that need attention, worst first: numbers stale against their results, contradicted
+        and contested claims, paragraphs changed since the checkpoint (what the person has not seen yet); each with
+        its id (for read_item) and file:line. The same marks the person sees in the Read tab."""
+        return tool_needs_attention(repo_root(), study)
+
+    @_read_only(server)
+    def what_changed_in_paper(study: str = "") -> Dict[str, Any]:
+        """The paragraphs of the paper changed since the checkpoint (what the person last marked as seen), with their
+        text and file:line: tell the person what you changed in the paper, paragraph by paragraph."""
+        return tool_what_changed_in_paper(repo_root(), study)
 
     @server.tool()
     def review_paper(run: bool = False) -> Dict[str, Any]:
