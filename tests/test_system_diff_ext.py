@@ -233,7 +233,7 @@ def test_review_lists_what_to_fix_worst_first_on_the_evidence_diagram(study):
 
 def test_agents_shows_who_owns_what_and_lights_it(study):
     page = x.web(ctx(study, "team"))
-    team = next(s for s in page["sections"] if s["title"] == "The research team")
+    team = next(s for s in page["sections"] if s["title"] == "Who owns which claims")
     assert team["kind"] == "lanes"
     lanes = {l["name"]: l for l in team["items"]}
     assert set(lanes) == {"batch-agent", "lr-agent"}

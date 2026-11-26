@@ -976,6 +976,18 @@ def _board(root: Path) -> Optional[dict]:
         return None
 
 
+def _system_agents(root: Path) -> List[dict]:
+    """The sections of system-diff's own Agents tab (the workflow board with each agent's session and log, the team's
+    lanes, the objectives they checked, who is in whose way, the agents worth keeping and the saved ones), so the
+    research's Agents tab is the same tab with the research added; [] with a system-diff that cannot draw it."""
+    try:
+        from system_diff import pane as sdp
+        got = sdp.web_view(Path(root), "agents", "", 0)
+    except Exception:  # noqa: BLE001 - the research's own sections stand alone
+        return []
+    return [x for x in got.get("sections") or [] if isinstance(x, dict)]
+
+
 def _ids_text(ids: List[str], most: int = 8) -> str:
     return ", ".join(ids[:most]) + (f" and {len(ids) - most} more" if len(ids) > most else "")
 
@@ -1007,11 +1019,12 @@ def _web_team(S: dict) -> dict:
                                  "kind": "change" if str(m.get("text", "")).startswith("CONTRADICTION") else "message"}
                                 for m in msgs if m.get("from") == a["name"]][-40:],
                       "blocks": ["b:" + x for x in a["owns"] if x in g["nodes"]]})
-    sections = []
-    board = _board(root)
-    if board:
-        sections.append(board)
-    sections.append({"title": "The research team", "kind": "lanes", "items": lanes,
+    sections = _system_agents(root)       # system-diff's own Agents tab: the board, the team, the saved agents
+    if not any(x.get("kind") == "workflow" for x in sections):
+        board = _board(root)
+        if board:
+            sections.insert(0, board)
+    sections.append({"title": "Who owns which claims", "kind": "lanes", "items": lanes,
                      "aside": f"plan: {plan['task'][:140]}" if plan.get("task") else
                      "who owns what: `by: <agent>` under a marker, or the team Claude plans (plan_agents)"})
     if g["cross_agent"]:
@@ -1019,7 +1032,7 @@ def _web_team(S: dict) -> dict:
             [{"sign": "✗", "status": "removed", "text": f"{c['owners'][0]}'s {c['from']} against {c['owners'][1]}'s "
               f"{c['to']}", "why": c["why"]} for c in g["cross_agent"]])})
     if msgs:
-        sections.append({"title": "What they told each other", "aside": "newest first, on the topics of the claims "
+        sections.append({"title": "What they said about the research", "aside": "newest first, on the topics of the claims "
                          "they touched", "kind": "notes", "items": _notes(
                              [{"sign": "✉", "status": "removed" if str(m.get("text", "")).startswith("CONTRADICTION")
                                else "same", "text": f"{m.get('from', '')}: {str(m.get('text', ''))[:200]}",
